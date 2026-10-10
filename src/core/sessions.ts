@@ -20,7 +20,7 @@ import { z } from 'zod'
 import { summitError } from './errors.js'
 import { CLEANUP_AGE_MS, isStaleMtime } from './freshness.js'
 import { jsonText, readJsonFile, writeJsonAtomic } from './fsx.js'
-import { beatTime, endBeat } from './heartbeat.js'
+import { beatTime } from './heartbeat.js'
 import { ID_PATTERN, joinHostKey, SESSION_FILE_HARNESSES } from './hostKey.js'
 import { log } from './log.js'
 import { DIR_MODE, FILE_MODE, sessionFile, sessionsDir } from './paths.js'
@@ -52,27 +52,8 @@ export async function writeSession(root: string, harness: string, pid: number, s
     log('info', 'writeSession', 'session recorded', { harness, pid, sessionId })
 }
 
-// Purpose: record the session that host process `pid` runs now (SessionStart, UserPromptSubmit, the OMP
-// extension's session start or switch). When this switches away from another recorded session (`/clear`,
-// `/new`), end that session's heartbeat at once (endBeat): nobody serves it any more, and a sender must
-// see it not alive now, not 10 s later. Returns the previous session id (null when none or unchanged).
-export async function switchSession(
-    root: string,
-    harness: string,
-    pid: number,
-    sessionId: string,
-): Promise<string | null> {
-    const previous = await readSession(root, harness, pid)
-    await writeSession(root, harness, pid, sessionId)
-    if (previous === null || previous === sessionId) return null
-    await endBeat(root, joinHostKey(harness, previous))
-    log('info', 'switchSession', 'session switched; previous heartbeat ended', { harness, pid, previous, sessionId })
-    return previous
-}
-
 // Purpose: renew the session that host process `pid` runs, or write it when none is recorded; never
-// switch it: write only when the recorded id is `sessionId`, or when no file exists (nothing to switch
-// from). Used by the
+// switch it: write only when the recorded id is `sessionId`, or when no file exists. Used by the
 // hooks that may run late (a Claude FileChanged wake, the OMP agent_start renew): one that started
 // before a `/clear` or `/new` and ends after it must not put the old session back. Residual race: two
 // writers inside the few ms between this read and the write; the next SessionStart or prompt corrects

@@ -1,7 +1,7 @@
 // Shared context and steps for the tool flows.
 import { summitError, toSummitError } from '../core/errors.js'
 import type { Exec } from '../core/exec.js'
-import { beat, endBeat, serveHostKey } from '../core/heartbeat.js'
+import { beat, serveHostKey } from '../core/heartbeat.js'
 import { isSignalHarness, resolveHostKey, usesSessionFile, type RequestMeta } from '../core/hostKey.js'
 import { requireHost } from '../core/identity.js'
 import { log } from '../core/log.js'
@@ -87,9 +87,6 @@ export async function beatCaller(call: CallContext, hostKey: string): Promise<vo
             error: toSummitError(err, 'beatCaller', { hostKey }).toJSON(),
         }),
     )
-    // A call that resolved its key just before a `/clear` must not revive the old session's heartbeat.
-    if (usesSessionFile(call.harness) && (await callHostKey(call).catch(() => null)) !== hostKey)
-        await endBeat(call.root, hostKey)
 }
 
 // Purpose: step that loads the caller's identity or fails with SUMMIT_NOT_JOINED. The record is

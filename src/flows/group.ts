@@ -46,7 +46,7 @@ interface GroupCtx extends WithHost {
     previousKey?: string
     agent?: AgentRecord
     // The name the claim took over: the holder's agent.json before the takeover, and the reason.
-    takenOver?: TakenOver[]
+    takenOver?: TakenOver
 }
 
 // Step: validate the group name.
@@ -77,7 +77,7 @@ const claimNewName = step<GroupCtx>(
         const agent = need(ctx.agent, 'agent')
         if (agent.name === null) return ctx
         const newKey = need(ctx.newKey, 'newKey')
-        let takenOver: TakenOver[] | undefined
+        let takenOver: TakenOver | undefined
         const claim = claimName(ctx.call.root, newKey, agent.name, agent.uuid, {
             force: ctx.force,
             onTakeover: (taken) => (takenOver = taken),

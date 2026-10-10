@@ -7,7 +7,6 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { extArm } from '../../src/cli/hooks.js'
 import { isAlive } from '../../src/core/agents.js'
 import {
     BEAT_MS,
@@ -18,11 +17,10 @@ import {
     sleep,
     STALE_MS,
 } from '../../src/core/freshness.js'
-import { beat, beatServed, beatTime, cleanupBeats, endBeat, startHeartbeat } from '../../src/core/heartbeat.js'
+import { beat, beatTime, cleanupBeats, startHeartbeat } from '../../src/core/heartbeat.js'
 import { LEASE_REFRESH_MS, LOCK_MAX_HOLD_MS } from '../../src/core/lease.js'
 import { aliveDir, aliveFile } from '../../src/core/paths.js'
 import { writeSessionSync } from '../../src/core/sessions.js'
-import { beatCaller } from '../../src/flows/context.js'
 import { group } from '../../src/flows/group.js'
 import { join } from '../../src/flows/join.js'
 import { startServing } from '../../src/server/server.js'
@@ -168,33 +166,5 @@ describe('server timer follows the host session', () => {
         stop = await startServing(root, omp)
         await sleep(300)
         expect(fs.readdirSync(aliveDir(root)).filter((f) => f.startsWith('omp-'))).toEqual([])
-    })
-})
-
-describe('ending the heartbeat of a session that is no longer current', () => {
-    it('a timer tick ends a key that stopped being current while it beat', async () => {
-        const root = tmpRoot()
-        let calls = 0
-        const current = async () => (calls++ === 0 ? ['claude-S-tick'] : ['claude-S-next'])
-        await beatServed(root, 'claude', current)
-        expect(await beatTime(root, 'claude-S-tick')).toBeNull()
-    })
-
-    it('a tool call that resolved its key before a /clear does not revive the old heartbeat', async () => {
-        const root = tmpRoot()
-        const hostPid = fakePid()
-        const call = callFor(root, 'claude', { hostPid, session: 'S-before' })
-        const j = await join(call)
-        writeSessionSync(root, 'claude', hostPid, 'S-after')
-        await endBeat(root, j.hostKey)
-        await beatCaller(call, j.hostKey)
-        expect(await beatTime(root, j.hostKey)).toBeNull()
-    })
-
-    it('pi: arming a new session ends the heartbeat of the session the process left', async () => {
-        const root = tmpRoot()
-        await beat(root, 'pi-S-old', 'pi')
-        await extArm('pi', 'S-new', null, root, 'S-old')
-        expect(await beatTime(root, 'pi-S-old')).toBeNull()
     })
 })

@@ -43,16 +43,6 @@ export async function beat(root: string, hostKey: string, harness: Harness, now 
     await fs.utimes(file, now, now)
 }
 
-// Purpose: end the heartbeat of a session that is no longer served (the host switched to another session
-// with `/clear` or `/new`, or a late beat landed on an old key): remove its file, so it reads not alive at
-// once instead of after STALE_MS. The one way to end a beat. Best effort, logged.
-export async function endBeat(root: string, hostKey: string): Promise<void> {
-    await fs.rm(aliveFile(root, hostKey), { force: true }).then(
-        () => log('info', 'endBeat', 'heartbeat ended', { hostKey }),
-        (err) => log('warn', 'endBeat', 'could not end the heartbeat', { hostKey, error: String(err) }),
-    )
-}
-
 // Purpose: the mtime of the heartbeat of one host key, or null when nothing ever beat it.
 export async function beatTime(root: string, hostKey: string): Promise<number | null> {
     return await mtimeOf(aliveFile(root, hostKey))
@@ -66,18 +56,14 @@ export function serveHostKey(hostKey: string): void {
 }
 
 // Purpose: one timer tick: beat the current keys of the host (`current`) and every registered Codex key.
-// Then look at the host's current keys again: a key that stopped being current while the tick ran (a
-// `/clear` between the read and the beat) is ended at once, so a late beat never revives an old session.
 // Errors are logged per key and never stop the other keys or the timer.
 export async function beatServed(root: string, harness: Harness, current: () => Promise<string[]>): Promise<void> {
-    const hostKeys = await current().catch(() => [] as string[])
-    for (const hostKey of new Set([...hostKeys, ...served])) {
+    const keys = new Set([...(await current().catch(() => [] as string[])), ...served])
+    for (const hostKey of keys) {
         await beat(root, hostKey, harness).catch((err) =>
             log('warn', 'beatServed', 'heartbeat failed', { hostKey, error: String(err) }),
         )
     }
-    const now = new Set(await current().catch(() => [] as string[]))
-    for (const hostKey of hostKeys) if (!now.has(hostKey)) await endBeat(root, hostKey)
 }
 
 // Purpose: delete heartbeat files older than CLEANUP_AGE_MS (sessions that ended long ago). Best effort.

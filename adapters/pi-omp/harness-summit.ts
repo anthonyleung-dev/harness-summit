@@ -8,7 +8,8 @@
 //        `<root>/.sessions/omp-<process.pid>.json`), and renews it on every agent_start (`hook ext-session`).
 //        Only in an interactive session (ctx.hasUI).
 // Then (only with a UI) it arms the signal file `<root>/.wake/<harness>-<sessionId>.signal`, watches it,
-// and when a sender rings it, asks the CLI for the notice and wakes the session:
+// reports mail that is already waiting (a resume), and when a sender rings it, asks the CLI for the
+// notice and wakes the session:
 //   pi  idle: custom message, then a steer user message (parent-wake shape, 10 s dedupe)
 //   pi  busy: custom message with triggerTurn + deliverAs followUp
 //   OMP     : custom message with triggerTurn + deliverAs followUp
@@ -143,8 +144,6 @@ export default function harnessSummit(api: any): void {
     let watcher: fs.FSWatcher | undefined
     let settle: NodeJS.Timeout | undefined
     let wakeSentAt: number | undefined
-    // The session this process armed last (pi: to end its heartbeat when the session changes).
-    let lastSessionId: string | undefined
 
     // Purpose: append one JSON log line to the summit log file (never to the TUI).
     const log = (level: string, fn: string, msg: string, data: Record<string, unknown> = {}) => {
@@ -209,28 +208,16 @@ export default function harnessSummit(api: any): void {
         if (c?.hasUI !== true) return
         ctx = c
         const pidArgs = harness === 'omp' ? ['--pid', String(process.pid)] : []
-        // pi: name the session this process left (`/new`, `/resume`), so the CLI ends its heartbeat at once.
-        const previousArgs =
-            harness === 'pi' && lastSessionId !== undefined && lastSessionId !== sessionId
-                ? ['--previous', lastSessionId]
-                : []
-        lastSessionId = sessionId
         try {
             armed = parseArmed(
-                await runCli([
-                    'hook',
-                    'ext-arm',
-                    '--harness',
-                    harness,
-                    '--session',
-                    sessionId,
-                    ...pidArgs,
-                    ...previousArgs,
-                ]),
+                await runCli(['hook', 'ext-arm', '--harness', harness, '--session', sessionId, ...pidArgs]),
             )
             watcher?.close()
             watcher = fs.watch(armed.signalPath, onSignal)
             log('info', 'arm', 'watching', { event, signalPath: armed.signalPath })
+            // A resumed session may have mail that arrived while nobody watched: report it once now.
+            const waiting = (await runCli(['notice', '--host-key', armed.hostKey])).trim()
+            if (waiting !== '') deliver(waiting)
         } catch (err) {
             log('error', 'arm', 'arm failed', { event, error: err as ExtError })
         }

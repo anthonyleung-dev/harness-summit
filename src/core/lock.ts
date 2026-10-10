@@ -24,7 +24,7 @@ import path from 'node:path'
 import { z } from 'zod'
 
 import { hasErrno, summitError } from './errors.js'
-import { confirmGone, isStaleMtime, mtimeOf, sleep, STALE_MS } from './freshness.js'
+import { confirmGone, isStaleMtime, mtimeOf, sleep } from './freshness.js'
 import { isBusyErrno, readTextFile, renameRetry } from './fsx.js'
 import { LEASE_REFRESH_MS, LOCK_MAX_HOLD_MS, startLease } from './lease.js'
 import { log } from './log.js'

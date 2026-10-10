@@ -136,17 +136,18 @@ describe('name takeover', () => {
         expect(await aliveOf()).toBe(true)
     })
 
-    it('mail to a Codex agent whose thread nobody serves is queued: no codex queue call, no paid turn', async () => {
-        const { joined: jcx } = await resumedCodex(root, 'cq', 'T-cq')
+    it('a send to a Codex thread that reads not alive still runs codex queue; the result says queued', async () => {
+        // `codex resume`: the new server beats the thread only after its first call, so it reads not
+        // alive, yet its idle TUI must be woken. Liveness only labels the result.
+        await resumedCodex(root, 'cq', 'T-cq')
         const exec = recordingExec()
         const other = callFor(root, 'pi', { exec })
         await join(other)
         expect(await send(other, { to: '@cq', message: 'later' })).toMatchObject({
             wake: 'queued',
-            note: 'cq is not active; the message waits until that session resumes.',
+            note: 'cq may not be active right now; it will see the message when its session is active again.',
         })
-        expect(exec.calls).toEqual([])
-        expect(fs.readdirSync(jcx.folder).filter((f) => f.endsWith('.md'))).toHaveLength(1)
+        expect(exec.calls.map((c) => c.req.args.slice(0, 3))).toEqual([['queue', '--thread', 'T-cq']])
     })
 
     it('a Codex holder whose thread nobody serves loses its name only with force (holder-gone)', async () => {

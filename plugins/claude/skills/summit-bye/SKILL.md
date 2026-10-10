@@ -7,4 +7,4 @@ disable-model-invocation: true
 
 Call the `summit_bye` tool of the harness-summit MCP server with no arguments.
 
-Report the result in one short line.
+Report in one short line exactly what the result says was removed.

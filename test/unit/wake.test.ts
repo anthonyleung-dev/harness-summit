@@ -97,7 +97,10 @@ describe('wake decision', () => {
         expect(await wakeReceiver({ folder, wake, exec, now: T0 })).toEqual({ wake: 'sent' })
         expect(fs.readFileSync(signal, 'utf8')).toMatch(/Z\n$/)
         await appendRecord(folder, 'bob', sampleRecord({ id: ID_B, from: 'bob', at: iso(T0 + 100) }))
-        expect(await wakeReceiver({ folder, wake, exec, now: T0 + 200 })).toEqual({ wake: 'skipped' })
+        expect(await wakeReceiver({ folder, wake, exec, now: T0 + 200, label: 'carol' })).toEqual({
+            wake: 'skipped',
+            note: 'a wake for carol is already pending; it will read this message too.',
+        })
         await writeCursor(folder, (await scanUnread(folder)).nextCursor)
         // Stamped BEFORE the last wake, yet never announced by it: still a new wake.
         await appendRecord(folder, 'bob', sampleRecord({ id: ID_C, from: 'bob', at: iso(T0 - 5) }))

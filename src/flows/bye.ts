@@ -10,10 +10,13 @@ import { mailboxOf } from '../core/paths.js'
 import { pipe, step } from '../core/pipe.js'
 import { hostKeyStep, need, requireHostStep, type CallContext, type WithHost } from './context.js'
 
+// What summit_bye removes, exactly (the group folder and other agents stay).
+export const BYE_REMOVES = ['name map entry', 'agent folder', 'identity record']
+
 export interface ByeResult {
     uuid: string
     groupKey: string
-    removed: true
+    removed: string[]
 }
 
 // Step: drop this agent's name from the group map.
@@ -51,5 +54,5 @@ export async function bye(call: CallContext): Promise<ByeResult> {
     ])
     const host = need(ctx.host, 'host')
     log('info', 'bye', 'left', { uuid: host.uuid, groupKey: host.groupKey })
-    return { uuid: host.uuid, groupKey: host.groupKey, removed: true }
+    return { uuid: host.uuid, groupKey: host.groupKey, removed: BYE_REMOVES }
 }

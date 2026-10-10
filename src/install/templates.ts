@@ -46,7 +46,10 @@ const LIST_BODY = [
     'Show the group key in one line, then the members as a short table with the columns name, harness, alive and uuid (its first 8 characters). Write `(you)` after the name of the member whose `self` is true. Show a missing name as `-`.',
 ].join('\n\n')
 
-const BYE_BODY = [`Call ${tool('summit_bye')} with no arguments.`, 'Report the result in one short line.'].join('\n\n')
+const BYE_BODY = [
+    `Call ${tool('summit_bye')} with no arguments.`,
+    'Report in one short line exactly what the result says was removed.',
+].join('\n\n')
 
 const JOIN = { description: 'Join the harness-summit group of this project', argumentHint: '[name]', body: JOIN_BODY }
 const GROUP = {

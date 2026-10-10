@@ -108,7 +108,9 @@ describe('two claude-style servers (distinct ppids via a Node parent)', () => {
             'alice',
         ])
 
-        expect(await b.call('summit_bye')).toMatchObject({ removed: true })
+        expect(await b.call('summit_bye')).toMatchObject({
+            removed: ['name map entry', 'agent folder', 'identity record'],
+        })
         expect(await b.call('summit_whoami')).toMatchObject({ joined: false })
         expect((await a.call('summit_send', { to: '@bob', message: 'gone?' })).error.code).toBe('SUMMIT_UNKNOWN_TARGET')
         expect((await a.call('summit_members')).members).toHaveLength(1)

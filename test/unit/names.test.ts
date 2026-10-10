@@ -1,22 +1,16 @@
 // Unit tests for names on every OS (team review R1, D): Windows device names are refused for display
 // names and group names, and names are unique ignoring letter case (each name is an inbox file name, and
 // macOS and Windows file systems ignore case by default).
-import fs from 'node:fs'
-import path from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { STALE_MS } from '../../src/core/freshness.js'
 import { namedGroupKey } from '../../src/core/project.js'
-import { formatRecord } from '../../src/core/records.js'
 import { isReservedName, NameSchema } from '../../src/core/schemas.js'
-import { group } from '../../src/flows/group.js'
 import { join } from '../../src/flows/join.js'
-import { members } from '../../src/flows/query.js'
-import { read } from '../../src/flows/read.js'
 import { rename } from '../../src/flows/rename.js'
 import { send } from '../../src/flows/send.js'
-import { callFor, errorCode, sampleRecord, tmpRoot } from '../helpers/env.js'
-import { ageBeat, mapOf, patchAgentJson, writeMap } from '../helpers/state.js'
+import { callFor, errorCode, tmpRoot } from '../helpers/env.js'
+import { ageBeat, mapOf, writeMap } from '../helpers/state.js'
 
 describe('Windows device names', () => {
     it('are refused as new names and group names, in any letter case', () => {
@@ -62,7 +56,7 @@ describe('names are unique ignoring case', () => {
     })
 })
 
-describe('maps and data written by older versions', () => {
+describe('case matches in the name map', () => {
     let root: string
     beforeEach(() => {
         root = tmpRoot()
@@ -88,7 +82,7 @@ describe('maps and data written by older versions', () => {
         const z = callFor(root, 'claude')
         await join(z)
         const err = await rename(z, 'BOB', true).catch((e: { code: string; message: string }) => e)
-        expect(err).toMatchObject({ code: 'SUMMIT_NAME_TAKEN', message: expect.stringContaining('letter case') })
+        expect(err).toMatchObject({ code: 'SUMMIT_NAME_TAKEN' })
         expect(mapOf(root, g)).toEqual({ Bob: ja.uuid, bob: jb.uuid })
     })
 
@@ -111,7 +105,7 @@ describe('maps and data written by older versions', () => {
         expect(res).toMatchObject({
             to: { uuid: jc.uuid },
             wake: 'queued',
-            note: expect.stringContaining('not active'),
+            note: expect.stringContaining('may not be active right now'),
         })
     })
 
@@ -129,18 +123,14 @@ describe('maps and data written by older versions', () => {
         expect(mapOf(root, g)).toEqual({ Bob: jb.uuid })
     })
 
-    it('an agent named aux by an older version stays readable, gets mail, and renames away; aux cannot be claimed', async () => {
-        const { a, b, ja, jb, g } = await twoAgents()
-        patchAgentJson(jb.folder, { name: 'aux' })
-        writeMap(root, g, { aux: jb.uuid })
-        expect((await members(a)).members.find((m) => m.uuid === jb.uuid)?.name).toBe('aux')
-        expect((await send(a, { to: '@aux', message: 'still reachable' })).to.uuid).toBe(jb.uuid)
-        // Mail it sent as `aux` before the upgrade is still mail, not a corrupt span.
-        const old = formatRecord(sampleRecord({ from: 'bob', fromId: jb.uuid })).replace('from: bob', 'from: aux')
-        fs.appendFileSync(path.join(ja.folder, `${jb.uuid}.md`), old)
-        expect((await read(a)).messages.map((m) => m.from)).toEqual(['aux'])
-        expect(await errorCode(group(b, 'g-aux'))).toBe('SUMMIT_BAD_NAME')
-        expect(await rename(b, 'auxiliary')).toMatchObject({ name: 'auxiliary', previousName: 'aux' })
-        expect(await errorCode(rename(a, 'aux'))).toBe('SUMMIT_BAD_NAME')
+    it('a lookup without the exact key that matches several keys by case is ambiguous and names them', async () => {
+        const { a, ja, jb, g } = await twoAgents()
+        writeMap(root, g, { Bob: ja.uuid, bob: jb.uuid })
+        const err = await send(a, { to: '@BOB', message: 'who?' }).catch((e: { code: string; message: string }) => e)
+        expect(err).toMatchObject({
+            code: 'SUMMIT_AMBIGUOUS_TARGET',
+            message:
+                "BOB matches 2 agents (Bob, bob). Send to one exact name or to its uuid (list the group's members to see it).",
+        })
     })
 })

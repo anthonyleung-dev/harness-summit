@@ -21,7 +21,7 @@ interface RenameCtx extends WithHost {
     name: string
     force: boolean
     agent?: AgentRecord
-    takenOver?: TakenOver[]
+    takenOver?: TakenOver
 }
 
 // Purpose: refuse names that cannot be file names or that look like a uuid (the one NameSchema).
@@ -51,7 +51,7 @@ async function setOwnName(
     groupKey: string,
     uuid: string,
     name: string,
-    taken: TakenOver[] | undefined,
+    taken: TakenOver | undefined,
 ): Promise<void> {
     if ((await updateAgent(root, groupKey, uuid, { name }, { lockHeld: true })) !== null) return
     await restoreHolder(root, groupKey, name, uuid, taken)
@@ -67,7 +67,7 @@ async function setOwnName(
 // map and agent.json never disagree.
 const claim = step<RenameCtx>('claimName', async (ctx) => {
     const host = need(ctx.host, 'host')
-    let takenOver: TakenOver[] | undefined
+    let takenOver: TakenOver | undefined
     await updateMembers(
         ctx.call.root,
         host.groupKey,

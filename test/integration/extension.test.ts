@@ -5,7 +5,6 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import harnessSummit, { parseArmed } from '../../adapters/pi-omp/harness-summit.js'
 import { sleep } from '../../src/core/freshness.js'
-import { beat, beatTime } from '../../src/core/heartbeat.js'
 import { buildNotice } from '../../src/core/notice.js'
 import { readSession, writeSessionSync } from '../../src/core/sessions.js'
 import { join } from '../../src/flows/join.js'
@@ -160,20 +159,25 @@ describe('pi/OMP extension', () => {
     })
 })
 
-describe('pi extension on a session change', () => {
-    it('names the session it left, so its heartbeat ends at once (pi /new)', async () => {
+describe('pi/OMP resume reports waiting mail', () => {
+    it('arming a session that has unread mail delivers the notice once', async () => {
         const root = tmpRoot()
+        const waiting = callFor(root, 'pi', { session: 'S-waiting' })
+        const jw = await join(waiting)
+        const sender = callFor(root, 'claude')
+        await join(sender)
+        await rename(sender, 'alice')
+        await send(sender, { to: jw.uuid, message: 'while you were away' })
         const api = fakeApi(true)
         harnessSummit(api.api)
-        const ctxFor = (sessionId: string) => ({
-            hasUI: true,
-            isIdle: () => true,
-            sessionManager: { getSessionId: () => sessionId },
-        })
-        await api.handlers.session_start!({}, ctxFor('S-first'))
-        await beat(root, 'pi-S-first', 'pi')
-        await api.handlers.session_start!({}, ctxFor('S-second'))
-        expect(await beatTime(root, 'pi-S-first')).toBeNull()
-        api.handlers.session_shutdown!({}, ctxFor('S-second'))
+        const ctx = { hasUI: true, isIdle: () => true, sessionManager: { getSessionId: () => 'S-waiting' } }
+        await api.handlers.session_start!({}, ctx)
+        await until(() => api.calls.length >= 1)
+        expect(api.calls[0]).toEqual([
+            'sendMessage',
+            { customType: 'harness-summit', content: buildNotice([{ from: 'alice' }]), display: true },
+            { triggerTurn: false },
+        ])
+        api.handlers.session_shutdown!({}, ctx)
     })
 })

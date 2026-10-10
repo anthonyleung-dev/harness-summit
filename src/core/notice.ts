@@ -57,9 +57,14 @@ export function buildNotice(unread: Pick<MessageRecord, 'from'>[]): string | nul
     return `[harness-summit] ${unread.length} unread message(s) from ${senders.join(', ')} in your summit group. Call the summit_read tool to read them.`
 }
 
-// Purpose: the note summit_send returns when the receiver is not active (its mail waits; no wake ran).
+// Purpose: the note of a send whose receiver reads not alive (its wake still ran).
 export function queuedNote(label: string): string {
-    return `${label} is not active; the message waits until that session resumes.`
+    return `${label} may not be active right now; it will see the message when its session is active again.`
+}
+
+// Purpose: the note of a debounced send (an earlier wake is still pending).
+export function pendingNote(label: string): string {
+    return `a wake for ${label} is already pending; it will read this message too.`
 }
 
 // Purpose: notice for the agent behind a host key, computed from disk. Null when the host has not

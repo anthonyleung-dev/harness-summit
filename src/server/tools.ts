@@ -88,9 +88,7 @@ export const SendOutput = z.object({
     id: UuidSchema,
     delivered: z.literal(true),
     to: z.object({ uuid: UuidSchema, name: z.string().nullable() }),
-    // sent: the receiver was woken; skipped: nothing unread or already told; failed: the wake did not
-    // run (wakeError says why); queued: the receiver's session is not active, no wake ran, the mail
-    // waits until it resumes (note says so).
+    // queued: the wake ran, but the receiver may not be active (its mail waits for its session).
     wake: z.enum(['sent', 'skipped', 'failed', 'queued']),
     wakeError: z.string().optional(),
     note: z.string().optional(),
@@ -235,7 +233,8 @@ export const TOOLS = [
         name: 'summit_bye',
         description: "Leave the summit: remove this agent's folder and name.",
         input: Empty,
-        output: z.object({ uuid: UuidSchema, groupKey: z.string(), removed: z.literal(true) }),
+        // `removed` lists exactly what went; the group folder and the other agents stay.
+        output: z.object({ uuid: UuidSchema, groupKey: z.string(), removed: z.array(z.string()) }),
         run: (call) => bye(call),
     }),
 ]
