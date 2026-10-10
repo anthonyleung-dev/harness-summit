@@ -125,6 +125,10 @@ sequenceDiagram
   extension passes it to the server it registers, and Codex and OpenCode attach it to each call. So a
   session you resume, even days later, gets its agent back (name and unread mail), and `/clear` or
   `/new` starts a new agent while the old one waits to be resumed.
+- **Mail to a session that is not active waits.** After `/clear`, `/new` or an exit, a send still
+  delivers the message, but wakes nobody and returns `wake: "queued"` with a note. Resuming that session
+  shows the waiting mail. The other wake results are `sent`, `skipped` (nothing new to announce) and
+  `failed` (with the reason).
 - **Bursts are debounced.** A receiver that already has a wake pending is not woken again within
   10 s. Each Codex or OpenCode wake costs a model turn.
 

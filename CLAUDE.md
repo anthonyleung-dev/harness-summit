@@ -102,6 +102,8 @@ npm run dev -- <args>   # run the CLI from source with tsx
   message. `sent` means exit 0. The binary comes from `SUMMIT_CODEX_BIN` (`SUMMIT_OPENCODE_BIN` for
   opencode), which install writes into every registration's env; a recorded path that is no longer
   executable falls back to PATH.
+- A receiver with `alive: false` gets no wake: `summit_send` returns `wake: "queued"` and a `note`
+  (`wakeReceiver` in `src/core/wake.ts`, note text `queuedNote` in `notice.ts`).
 - The wake decision holds the receiver's `.cursor.lock` and writes its debounce claim to `.lastwake`
   before the wake command runs; a failed wake removes only its own claim (`src/core/wake.ts`).
 - The rules for mail: `JOIN_INSTRUCTION` (user's words, in the `/summit-join` body) and
@@ -135,6 +137,7 @@ these has exactly one implementation:
 | Stored vs new names | `StoredNameSchema`, `NameSchema`, `isSenderLabel` in `schemas.ts`  |
 | Same file path      | `samePath` in `src/core/project.ts`                                |
 | Session renew       | `renewSession` in `src/core/sessions.ts` (never switches)          |
+| Session switch      | `switchSession` in `sessions.ts` (ends the old beat: `endBeat`)    |
 | File modes          | `DIR_MODE`, `FILE_MODE` in `src/core/paths.ts`                     |
 | Lock lease refresh  | `src/core/lease.ts`                                                |
 | Rename (retrying)   | `renameRetry` in `src/core/fsx.ts`                                 |

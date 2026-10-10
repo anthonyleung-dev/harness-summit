@@ -85,6 +85,13 @@ Rules:
   earlier than the server's own start minus 30 s (`SESSION_CLOCK_TOLERANCE_MS`: the host writes it at
   its startup, about when it starts the server); an older file reads as "no session"
   (`SUMMIT_NO_HOST_KEY`, "hooks did not run"), and the server's timer never beats its key.
+- A switch ends the old session's heartbeat at once (`switchSession` in `src/core/sessions.ts`, then
+  `endBeat` in `src/core/heartbeat.ts`, the one way to end a beat): when Claude's SessionStart or
+  UserPromptSubmit, or the OMP extension's arm, records a session id other than the recorded one, the
+  previous session reads `alive: false` immediately, not 10 s later. pi keeps no session file: its
+  extension names the session it left (`hook ext-arm --previous <id>`). A beat in flight during the
+  switch cannot revive the old key: the server timer and every tool call look up the current key
+  again after their beat and end a key that is no longer current.
 - Claude refreshes its session file on more than SessionStart: the `UserPromptSubmit` hook rewrites it
   with the `session_id` from its stdin (a common input field of every hook event, Claude Code hooks
   docs) through the same writer, with a new `at`; every `FileChanged` (wake) hook renews `at` without ever switching the session (`renewSession` in
@@ -383,9 +390,15 @@ content, both built in `src/core/notice.ts`:
   (`SUMMIT_BAD_INPUT`). The wake payloads never hold them: a notice names senders only by display name
   or uuid (`SenderLabelSchema`; a record whose `from` is anything else is a corrupt span). The pi/OMP extension starts only the node binary (an `.exe`) with the CLI,
   so it needs no copy of this door.
-- Wake is best effort: `summit_send` returns `{ id, delivered: true, wake: "sent" | "skipped" | "failed", wakeError? }`.
+- Wake is best effort: `summit_send` returns `{ id, delivered: true, wake: "sent" | "skipped" | "failed" | "queued", wakeError?, note? }`.
   `sent` means the signal was written, or the wake command exited 0. A non-zero exit, a timeout or a
   spawn error is `failed` with a stderr excerpt in `wakeError`. A failed wake never fails the send.
+- A receiver that is not active (`alive: false`, section 7: its session ended, or the host switched to
+  another session with `/clear` or `/new`) gets the record in its inbox as always, but no wake: no ring
+  of a signal nobody watches, no `codex queue`, no `opencode` prompt (no paid turn for nobody). The
+  result is `wake: "queued"` with `note: "<name> is not active; the message waits until that session
+  resumes."`. A resume reports the mail (Claude SessionStart `additionalContext`; the pi/OMP
+  extension's arm). OpenCode (`alive: "unknown"`) is woken as before.
 - Every wake decision uses the receiver's state after the append: nothing unread (the receiver read
   it in between) → `"skipped"`, never an empty notice. The decision holds the receiver's
   `.cursor.lock` (the lock `summit_read` holds while it scans and moves its cursor), so a read in
