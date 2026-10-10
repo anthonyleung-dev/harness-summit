@@ -195,6 +195,11 @@ real path; on Windows with a lower-case drive letter), or the group name after `
   are not found again; each session joins anew. pi needs the new extension: install removes the old
   `~/.pi/agent/mcp.json` entry, because one of the same name would hide the extension's server.
 - OMP records its session only in an interactive session; `omp` without a UI cannot use the tools.
+- Claude Code finds its session through the plugin's SessionStart hook. If you start hooks through a
+  `CLAUDE_CODE_SHELL_PREFIX` wrapper, or reconnect the MCP server by hand (`/mcp`) long after the session
+  started, the tools answer `SUMMIT_NO_HOST_KEY` until the next SessionStart (`/resume` the session).
+- Names ignore letter case (`Alice` and `alice` are one name), and Windows device names (`con`, `nul`,
+  `com1`, ...) are refused as names and group names on every OS.
 - On Windows, a session's own server is stopped without a drain when the harness kills it (Windows
   has no catchable SIGTERM for a child); harnesses that close stdin first get a clean exit.
 - Nobody deletes the folders of agents that are gone. Their names can be taken over by the next

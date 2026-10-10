@@ -80,8 +80,21 @@ Rules:
   with `--harness pi`: our own extension sets it on the child it registers.
 - The parent pid is read ONCE, when the server starts (`runMcpServer`): after the host dies, Linux
   reparents the server and `process.ppid` would name init. The pid never is the identity: it only finds
-  the session file that the live host rewrote at startup, so a reused pid finds the new host's session,
-  never the dead one's.
+  a session file. A file can be left by a dead process that had the same pid, and the new host's hook
+  may not have run (yet, or at all). So the server trusts a session file only when its `at` is no
+  earlier than the server's own start minus 30 s (`SESSION_CLOCK_TOLERANCE_MS`: the host writes it at
+  its startup, about when it starts the server); an older file reads as "no session"
+  (`SUMMIT_NO_HOST_KEY`, "hooks did not run"), and the server's timer never beats its key. Known cost: a
+  server reconnected by hand long after the host's last SessionStart (Claude `/mcp`) answers
+  `SUMMIT_NO_HOST_KEY` until the next SessionStart (`/resume`, `/clear` or a restart).
+- A server that starts deletes session files older than 24 h whose session no server beats (a live
+  claude may run one session for days; its file stays).
+- The Claude hook keys the session file by its parent pid: exec-form hooks are spawned by claude
+  directly (verified from Claude Code 2.1.296), so the parent is claude. `$CLAUDE_PID` is inherited env
+  (a claude started from another claude's tool call inherits it): it only confirms, and a value that
+  differs from the parent pid is logged and ignored. A `CLAUDE_CODE_SHELL_PREFIX` wrapper puts another
+  process between claude and the hook; the session is then recorded under the wrapper's pid and the
+  server reports `SUMMIT_NO_HOST_KEY` (named in its message).
 - A signal harness call without a session id fails with `SUMMIT_NO_HOST_KEY` and says why: Claude
   "the harness-summit plugin hooks did not run"; pi "SUMMIT_SESSION_ID is not set: the pi extension
   registers this server; remove any harness-summit entry from ~/.pi/agent/mcp.json"; OMP "the OMP
@@ -145,8 +158,11 @@ temp dir and never touch the real root.
   or the OpenCode session's directory (`opencode api session.get --param sessionID=<id>`, field
   `data.location.directory`, per the OpenAPI `Session.Info` schema) when available, else
   `process.cwd()`. Record which source was used in `agent.json.cwdSource`.
-- Named group key: the group name itself, matching `^[a-z0-9][a-z0-9-]{0,31}$` and not 32 hex
-  characters.
+- Named group key: the group name itself, matching `^[a-z0-9][a-z0-9-]{0,31}$`, not 32 hex
+  characters, and not a Windows device name (`con`, `prn`, `aux`, `nul`, `com0`-`com9`, `lpt0`-`lpt9`,
+  also with superscript digits; `isReservedName`, the one definition, also used for display names).
+- Modes: the summit root and every folder in it are created 0700, every file 0600 (`DIR_MODE`,
+  `FILE_MODE` in `src/core/paths.ts`), where the OS supports modes (Windows keeps only the write bit).
 - `summit_group <name> [force]` MOVES the agent, in this order: claim the name in the new group's map
   (fails with `SUMMIT_NAME_TAKEN` before anything moves; `force` as for rename, section 5), move the
   folder (one rename; refused when the new group already has a folder for the uuid), write the
@@ -218,8 +234,10 @@ replyTo: <message id>      # only on replies
 - A lock is a lease (no OS process inspection, every OS; XPLAT-AUDIT §H): right after the create and
   then every 2 s while it holds the lock, the holder sets the lock file's mtime to now
   (`src/core/lease.ts`), for at most `LOCK_MAX_HOLD_MS` = 60 s (four times the longest legal hold: a
-  group move that waits up to 15 s for a `.cursor.lock`). A lock is stale when its mtime is older than
-  10 s and a second look confirms it: the waiter waits 2.5 s (`SECOND_LOOK_MS`, its own timer) and reads
+  group move that waits up to 15 s for a `.cursor.lock`). A lock is stale when its mtime is more than
+  10 s in the past or more than 10 s in the future (`isStaleMtime` in `src/core/freshness.ts`, the one
+  freshness rule for locks and heartbeats: a live holder always writes "now") and a second look
+  confirms it: the waiter waits 2.5 s (`SECOND_LOOK_MS`, its own timer) and reads
   the mtime again; any change means the holder lives (a wall-clock jump or a laptop sleep never breaks a
   live holder). A lock that holds a token the reading process itself abandoned (its release failed) is
   stale at once. A lock file without a readable owner line (a holder died between the create and the
@@ -227,7 +245,10 @@ replyTo: <message id>      # only on replies
   refresh first re-reads the token, so a holder never refreshes a lock that another waiter took after a
   break.
 - Breakers are serialized by `<lock>.break`, an O_EXCL lock of the same format that is held only for
-  a few file operations and is not refreshed; it is stale when it is older than 10 s. Under it, the
+  a few file operations and is not refreshed; it is stale by the same rule, with the same second look
+  (a forward clock jump must not let a second breaker tomb the break lock of a working breaker). A tomb
+  rename that stays blocked after its retries (Windows: another program holds the file) is not a
+  failure: the waiter tries again on its next round, until its 15 s timeout. Under the break lock, the
   waiter re-reads the lock, checks that it still holds the stale content it saw and is still stale,
   renames it to a unique tomb and removes the tomb. A tomb that holds anything else is linked back
   (this cannot happen while the break lock holds). So a waiter never moves a lock that another waiter
@@ -253,10 +274,12 @@ replyTo: <message id>      # only on replies
   operations each, and it is not closed.
 - Name ownership (owner decision, 2026-10-10). A map entry whose uuid has no folder in this group is a
   leftover (a move or a crash left it; a move in progress holds the lock): the name is free, and every
-  claim drops all such entries. Otherwise rename fails with `SUMMIT_NAME_TAKEN` while the name maps to a
-  different uuid whose folder exists in this group: always when the holder is `alive: true`, and without
-  `force` for every other holder (`alive: false`: no server beat it for 10 s; `"unknown"`: OpenCode, or
-  an agent never beaten), because its session may resume later and expect its name. With `force: true`
+  claim drops all such entries. Names are unique ignoring letter case (`Alice` and `alice` are one name:
+  each name is an inbox file name, and macOS and Windows file systems ignore case by default;
+  `nameKey` in `src/core/members.ts`), and `@name` resolves ignoring case. Otherwise rename fails with
+  `SUMMIT_NAME_TAKEN` while the name maps to a different uuid whose folder exists in this group: always when the holder is `alive: true`, and without
+  `force` for every other holder (`alive: false`: no server beat it for 10 s, or its heartbeat is gone;
+  `"unknown"`: OpenCode), because its session may resume later and expect its name. With `force: true`
   (`/sr <name> --force`, `/sg <group> --force`) a holder that is not alive loses the name; a holder that
   looks gone gets the second look first (section 7), and a beat during it means alive (refused). The
   error says when `force` would help. A takeover removes the holder's map entry, sets the holder's
@@ -320,12 +343,16 @@ content, both built in `src/core/notice.ts`:
 - Every external command (`codex`, `opencode`, `claude`, `git`) starts through one spawn door
   (`src/core/exec.ts`). It looks a bare name up on PATH itself; on Windows it tries each PATHEXT
   extension (`codex` finds `codex.cmd`, `opencode` finds `opencode.exe`), and "executable" means "a file
-  whose extension is in PATHEXT". A `.cmd` or `.bat` file (an npm shim) runs as `cmd.exe /d /s /c
-  "<line>"`: the shim path in quotes, then each argument quoted for the C runtime parser and
+  whose extension is in PATHEXT. It only searches absolute PATH entries and returns an absolute file;
+  a command it cannot find fails with a structured ENOENT (`SUMMIT_EXEC_FAILED`) and is never handed to
+  libuv as a bare name. A `.cmd` or `.bat` file (an npm shim) runs as `<cmd.exe> /d /v:off /s /c
+  "<line>"`, where `<cmd.exe>` is `ComSpec` when absolute, else `<SystemRoot>\System32\cmd.exe`: the shim path in quotes, then each argument quoted for the C runtime parser and
   caret-escaped twice, once for the `/c` line and once for the shim's `%*` line (`src/core/winCmd.ts`),
   so the OpenCode JSON payload arrives byte for byte. Anything else is spawned directly, never through a
-  shell. A line break cannot pass through cmd.exe (refused); `%` and `!` are not guaranteed to (the wake
-  payloads hold neither). The pi/OMP extension starts only the node binary (an `.exe`) with the CLI,
+  shell. cmd.exe expands `%VAR%` and `!VAR!` before any escape applies, and a line break ends the
+  command: an argument or a shim path that holds `%`, `!` or a line break is refused
+  (`SUMMIT_BAD_INPUT`). The wake payloads never hold them: a notice names senders only by display name
+  or uuid (`SenderLabelSchema`; a record whose `from` is anything else is a corrupt span). The pi/OMP extension starts only the node binary (an `.exe`) with the CLI,
   so it needs no copy of this door.
 - Wake is best effort: `summit_send` returns `{ id, delivered: true, wake: "sent" | "skipped" | "failed", wakeError? }`.
   `sent` means the signal was written, or the wake command exited 0. A non-zero exit, a timeout or a
@@ -370,15 +397,17 @@ content, both built in `src/core/notice.ts`:
   beats and the old one goes stale); pi the session of its env; Codex every thread a call on this server
   has used; OpenCode none (one shared server outlives every session). A beat never takes a lock and
   never writes `agent.json`. A server that starts deletes heartbeat files older than 24 h.
-- `summit_members` reports `alive` from the heartbeat of the agent's host key: `"unknown"` for OpenCode
-  and for an agent never beaten (it joined before heartbeats existed); `true` while the heartbeat is at
-  most 10 s old (`STALE_MS`) or in the future; `false` when it is older. A decision that declares a
+- `summit_members` reports `alive` from the heartbeat of the agent's host key: `"unknown"` for OpenCode;
+  `true` while the heartbeat is fresh (`isStaleMtime`: at most 10 s in the past or the future); `false`
+  when it is stale or missing (every agent is beaten at join, so a missing heartbeat was cleaned up 24 h
+  after its session ended, or the agent joined before heartbeats existed: the same answer, and the same
+  takeover reason, before and after the cleanup). A decision that declares a
   holder gone (a forced name takeover, section 5; a lock break uses the same second look on the lock
   file) waits `SECOND_LOOK_MS` = 2.5 s and reads the mtime again; any change means alive.
 - Known limits: liveness is "some server beat this session within 10 s", not "a model is working in
   it": a Codex server that outlives `/new` keeps the old thread alive until the TUI exits (section 6). A
   stopped server (SIGSTOP, a debugger) reads gone after 10 s. After an upgrade, a session served by a
-  server from before the heartbeat reads `"unknown"` until it restarts.
+  server from before the heartbeat reads `false` until it restarts.
 
 ## 8. Installation (`harness-summit install`)
 
@@ -408,10 +437,10 @@ claude-session-start`, `hook claude-file-changed`, `notice --host-key <key>`, `i
   already ran.
 - The Claude hooks use exec form (`"command": <node>, "args": [<cli>, "hook", <sub>]`): Claude Code
   spawns node directly, with no shell, on every OS (Claude Code hooks docs, "Exec form and shell form"),
-  so the hook's parent is the claude process and the `process.ppid` fallback of the host pid is right;
-  the hook takes `$CLAUDE_PID` first when it is set. The exec form follows the docs; a live run on a
-  Claude session is still to do on every OS (no model turns in the cross-platform change), and
-  `CLAUDE_PID` was seen only on Linux.
+  so the hook's parent is the claude process, and the hook keys its session by that parent pid
+  (section 3). The exec form follows the docs and the 2.1.296 binary; a live run on a Claude session is
+  still to do on every OS. The repo's dev plugin (`plugins/claude`, for `claude --plugin-dir`) starts the
+  bare name `node`: dev only, never installed.
 - External commands that install runs get `HOME` and `USERPROFILE` set to `--home` (Windows programs
   read `USERPROFILE`).
 - `--help`, no command, `--dry-run` and `doctor` never create the summit root (no log file).
