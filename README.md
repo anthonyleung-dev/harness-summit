@@ -130,10 +130,9 @@ sequenceDiagram
   session you resume, even days later, gets its agent and unread mail back (its name too, unless
   another agent took it with `--force` meanwhile), and `/clear` or `/new` starts a new agent while the
   old one waits to be resumed.
-- **Mail to a session that is not active waits.** After `/clear`, `/new` or an exit, a send still
-  delivers the message, but wakes nobody and returns `wake: "queued"` with a note. Resuming that session
-  shows the waiting mail. The other wake results are `sent`, `skipped` (nothing new to announce) and
-  `failed` (with the reason).
+- **Every send runs the receiver's wake.** The result is `sent`, `skipped` (a wake is already pending),
+  `failed` (with the reason), or `queued` when the receiver may not be active (after `/clear`, `/new` or
+  an exit): it sees the message when its session is active again.
 - **Bursts are debounced.** A receiver that already has a wake pending is not woken again within
   10 s. Each Codex or OpenCode wake costs a model turn.
 

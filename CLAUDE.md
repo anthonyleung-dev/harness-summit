@@ -65,7 +65,8 @@ npm run dev -- <args>   # run the CLI from source with tsx
   session file each tick, pi its env session, codex every thread a call registered, opencode none.
   `alive` = beat fresh (`isStaleMtime` in `src/core/freshness.ts`: ≤ 10 s in the past or future) →
   true, stale or missing → false, OpenCode always "unknown". A "gone" decision (forced takeover, lock
-  break) takes the second look (`confirmGone`, 2.5 s; any mtime change = alive). A name takeover needs `force` for every holder that is not alive now.
+  break) takes the second look (`confirmGone`, 2.5 s; any mtime change = alive). A name takeover needs
+  `force` for every holder that is not alive now.
   `agent.json.pid` is informational. Every write of an existing `agent.json` goes through
   `updateAgent` (`src/core/agents.ts`). `summit_group` holds the new group's `members.lock` from the
   name claim until the folder has moved, so a map entry whose uuid has no folder in that group is
@@ -102,8 +103,8 @@ npm run dev -- <args>   # run the CLI from source with tsx
   message. `sent` means exit 0. The binary comes from `SUMMIT_CODEX_BIN` (`SUMMIT_OPENCODE_BIN` for
   opencode), which install writes into every registration's env; a recorded path that is no longer
   executable falls back to PATH.
-- A receiver with `alive: false` gets no wake: `summit_send` returns `wake: "queued"` and a `note`
-  (`wakeReceiver` in `src/core/wake.ts`, note text `queuedNote` in `notice.ts`).
+- Liveness never decides whether a wake runs (`wakeReceiver`, `src/core/wake.ts`): it only labels the
+  result (`queued` + note when the receiver reads not alive; a debounced send is `skipped` + note).
 - The wake decision holds the receiver's `.cursor.lock` and writes its debounce claim to `.lastwake`
   before the wake command runs; a failed wake removes only its own claim (`src/core/wake.ts`).
 - The rules for mail: `JOIN_INSTRUCTION` (user's words, in the `/summit-join` body) and
@@ -134,11 +135,9 @@ these has exactly one implementation:
 | Name lookup         | `lookupName` in `src/core/members.ts` (exact, else one case match) |
 | Name claims, undo   | `src/flows/claim.ts` (`claimName`, `restoreHolder`)                |
 | Case matches        | `nameKeys` in `src/core/members.ts` (exact key first)              |
-| Device names        | `isReservedName` in `schemas.ts`, `inboxLabel` in `agents.ts`      |
-| Stored vs new names | `StoredNameSchema`, `NameSchema`, `isSenderLabel` in `schemas.ts`  |
+| Names, device names | `NameSchema`, `isReservedName`, `isSenderLabel` in `schemas.ts`    |
 | Same file path      | `samePath` in `src/core/project.ts`                                |
 | Session renew       | `renewSession` in `src/core/sessions.ts` (never switches)          |
-| Session switch      | `switchSession` in `sessions.ts` (ends the old beat: `endBeat`)    |
 | File modes          | `DIR_MODE`, `FILE_MODE` in `src/core/paths.ts`                     |
 | Lock lease refresh  | `src/core/lease.ts`                                                |
 | Rename (retrying)   | `renameRetry` in `src/core/fsx.ts`                                 |

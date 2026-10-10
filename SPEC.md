@@ -85,13 +85,6 @@ Rules:
   earlier than the server's own start minus 30 s (`SESSION_CLOCK_TOLERANCE_MS`: the host writes it at
   its startup, about when it starts the server); an older file reads as "no session"
   (`SUMMIT_NO_HOST_KEY`, "hooks did not run"), and the server's timer never beats its key.
-- A switch ends the old session's heartbeat at once (`switchSession` in `src/core/sessions.ts`, then
-  `endBeat` in `src/core/heartbeat.ts`, the one way to end a beat): when Claude's SessionStart or
-  UserPromptSubmit, or the OMP extension's arm, records a session id other than the recorded one, the
-  previous session reads `alive: false` immediately, not 10 s later. pi keeps no session file: its
-  extension names the session it left (`hook ext-arm --previous <id>`). A beat in flight during the
-  switch cannot revive the old key: the server timer and every tool call look up the current key
-  again after their beat and end a key that is no longer current.
 - Claude refreshes its session file on more than SessionStart: the `UserPromptSubmit` hook rewrites it
   with the `session_id` from its stdin (a common input field of every hook event, Claude Code hooks
   docs) through the same writer, with a new `at`; every `FileChanged` (wake) hook renews `at` without ever switching the session (`renewSession` in
@@ -116,10 +109,7 @@ Rules:
   a `tools/call`. A call without the expected `_meta` key fails with `SUMMIT_NO_HOST_KEY`.
 - Identity file: `<root>/.hosts/<hostKey>.json` = `{ uuid, groupKey, harness, hostKey, joinedAt }`.
   `summit_join` creates it; `summit_group` updates `groupKey`; `summit_bye` deletes it. Nothing else
-  deletes it: a record never goes stale, because its key names a session that may resume. Records
-  written by older versions may hold `hostStart`; it is ignored and dropped on the next write.
-- Upgrade note: older versions keyed claude, pi and omp by the host pid (`claude-<pid>`). Those records
-  and agent folders stay on disk and nothing reads them again; a session joins anew after the upgrade.
+  deletes it: a record never goes stale, because its key names a session that may resume.
 - Known limit: OMP records its session only in an interactive session (`ctx.hasUI`): on `session_start`,
   `session_switch` and every `agent_start` (the last one renews `at` through `hook ext-session` with `renewSession`, never switching the session, so an
   OMP-restarted server trusts the file again from the next turn). An OMP run without a UI gets
@@ -179,13 +169,9 @@ temp dir and never touch the real root.
   `data.location.directory`, per the OpenAPI `Session.Info` schema) when available, else
   `process.cwd()`. Record which source was used in `agent.json.cwdSource`.
 - Named group key: the group name itself, matching `^[a-z0-9][a-z0-9-]{0,31}$`, not 32 hex
-  characters, and not a Windows device name (`con`, `prn`, `aux`, `nul`, `com0`-`com9`, `lpt0`-`lpt9`,
-  `isReservedName`, the one definition; the name patterns are ASCII-only, so the superscript forms cannot
-  occur). The rule applies where a name or group is chosen anew (`validateName`, `claimName`,
-  `namedGroupKey`); names and mail written by older versions stay readable (`StoredNameSchema`,
-  `isSenderLabel`), and such an agent renames away before it can claim its name elsewhere.
-- At start, a server sets the root to 0700 once (a root created 0755 by an older version then blocks
-  traversal); quiet where the OS has no POSIX modes or the root does not exist yet; a symlinked root is
+  characters, and not a Windows device name (`con`, `prn`, `aux`, `nul`, `com0`-`com9`, `lpt0`-`lpt9`;
+  `isReservedName`, the one definition, also used by `NameSchema` for display names).
+- At start, a server sets the root to 0700 once; quiet where the OS has no POSIX modes or the root does not exist yet; a symlinked root is
   left as it is (chmod would change its target) with a warn, and EPERM/EACCES are logged at warn.
 - Modes: the summit root and every folder in it are created 0700, every file 0600 (`DIR_MODE`,
   `FILE_MODE` in `src/core/paths.ts`), where the OS supports modes (Windows keeps only the write bit).
@@ -204,9 +190,7 @@ temp dir and never touch the real root.
   the next call (section 3). The result carries `takeover` as `summit_rename` does (section 5).
 - `<sender>.md` files: only names of the form `<name>.md` or `<uuid>.md` are inboxes. Any other
   file in the folder is never parsed.
-- `<sender>` in a file name is the sender's display name if it has one, else its uuid (`inboxLabel`). On
-  Windows a sender whose name an older version allowed but that is a device name (`aux`) uses its uuid
-  (`aux.md` would be the AUX device); its records still name it `aux`.
+- `<sender>` in a file name is the sender's display name if it has one, else its uuid.
 - `agent.json.pid`: the host pid for Claude Code, pi and OMP; the MCP server's own `process.pid` for
   Codex; `null` for OpenCode, as of the last `summit_join`. It is informational only: liveness comes
   from the heartbeat of the host key (section 7). The field stays because servers before the heartbeat require it. Records
@@ -215,9 +199,9 @@ temp dir and never touch the real root.
 ## 5. Messages
 
 - `summit_send({ to, message, replyTo? })`. `to` is `@name`, `name`, or a uuid. Names resolve through
-  the current group's `members.json`. Unknown target → `SUMMIT_UNKNOWN_TARGET`. A name that matches no key exactly and several keys only by
-  letter case (a pair an older version wrote) → `SUMMIT_AMBIGUOUS_TARGET`, naming the candidates
-  (`lookupName`, the one lookup door: exact key, else the only case match). Target folder missing →
+  the current group's `members.json`. Unknown target → `SUMMIT_UNKNOWN_TARGET`. A name with no exact key that matches several keys by
+  letter case → `SUMMIT_AMBIGUOUS_TARGET`, naming them (`lookupName`: exact key, else the only case
+  match). Target folder missing →
   `SUMMIT_TARGET_GONE`. Sending to yourself → `SUMMIT_SELF_SEND`.
 - `body` is an alias of `message`: `summit_send({ to, body, replyTo? })` sends the same record, because
   a model that just read `body` in `summit_read` mirrors that field (OMP, 2026-10-10). Exactly one of
@@ -306,14 +290,8 @@ replyTo: <message id>      # only on replies
   leftover (a move or a crash left it; a move in progress holds the lock): the name is free, and every
   claim drops all such entries. New names are unique ignoring letter case (`Alice` and `alice` are one
   name: each name is an inbox file name, and macOS and Windows file systems ignore case by default;
-  `nameKeys` in `src/core/members.ts`). A lookup (`@name`) takes the exact key first, else a case match.
-  A claim judges every case match, also when the caller's own entry holds the exact key (so a legacy
-  pair `{Bob: me, bob: X}` is never left behind by a claim of `Bob`); one other holder is judged as below and
-  only its entry is replaced; several (a case pair an older version wrote) are taken over together only
-  with `force` and only when every one of them is `alive: false` after the second look (any holder that
-  is alive or unknown keeps the pair); every one of them loses its entry and its `agent.json.name`, and
-  an undo gives every one back (`restoreHolder`). The result's `takeover` names the first; all are
-  logged (`src/flows/claim.ts`).
+  `nameKeys` in `src/core/members.ts`); a claim judges the other agent that holds the name in any case
+  (`src/flows/claim.ts`). Rename fails with
   `SUMMIT_NAME_TAKEN` while the name maps to a different uuid whose folder exists in this group: always when the holder is `alive: true`, and without
   `force` for every other holder (`alive: false`: no server beat it for 10 s, or its heartbeat is gone;
   `"unknown"`: OpenCode), because its session may resume later and expect its name. With `force: true`
@@ -394,12 +372,11 @@ content, both built in `src/core/notice.ts`:
 - Wake is best effort: `summit_send` returns `{ id, delivered: true, wake: "sent" | "skipped" | "failed" | "queued", wakeError?, note? }`.
   `sent` means the signal was written, or the wake command exited 0. A non-zero exit, a timeout or a
   spawn error is `failed` with a stderr excerpt in `wakeError`. A failed wake never fails the send.
-- A receiver that is not active (`alive: false`, section 7: its session ended, or the host switched to
-  another session with `/clear` or `/new`) gets the record in its inbox as always, but no wake: no ring
-  of a signal nobody watches, no `codex queue`, no `opencode` prompt (no paid turn for nobody). The
-  result is `wake: "queued"` with `note: "<name> is not active; the message waits until that session
-  resumes."`. A resume reports the mail (Claude SessionStart `additionalContext`; the pi/OMP
-  extension's arm). OpenCode (`alive: "unknown"`) is woken as before.
+  Liveness never decides whether the wake runs; it only labels the result: a receiver that reads
+  `alive: false` gets `queued` with `note: "<name> may not be active right now; it will see the message
+  when its session is active again."`. A debounced send is `skipped` with `note: "a wake for <name> is
+  already pending; it will read this message too."`. On resume, Claude's SessionStart and the pi/OMP
+  extension's arm report waiting mail; a Codex thread finds its `codex queue` entry.
 - Every wake decision uses the receiver's state after the append: nothing unread (the receiver read
   it in between) → `"skipped"`, never an empty notice. The decision holds the receiver's
   `.cursor.lock` (the lock `summit_read` holds while it scans and moves its cursor), so a read in
@@ -424,7 +401,8 @@ content, both built in `src/core/notice.ts`:
 
 ## 7. Leaving and process exit
 
-- `summit_bye` removes the map entry, the agent folder and the `.hosts` record. Messages the agent
+- `summit_bye` removes the map entry, the agent folder and the `.hosts` record, and its result lists
+  exactly those (`removed`); the group folder and the other agents stay. Messages the agent
   sent to others stay in their folders.
 - Harnesses kill MCP children with a signal, not stdin EOF (Codex, Claude Code). The server handles
   SIGTERM, SIGINT, SIGHUP (not on Windows, which has no SIGHUP) and stdin end the same way: wait for
