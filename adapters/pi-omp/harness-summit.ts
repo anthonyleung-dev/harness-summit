@@ -143,6 +143,8 @@ export default function harnessSummit(api: any): void {
     let watcher: fs.FSWatcher | undefined
     let settle: NodeJS.Timeout | undefined
     let wakeSentAt: number | undefined
+    // The session this process armed last (pi: to end its heartbeat when the session changes).
+    let lastSessionId: string | undefined
 
     // Purpose: append one JSON log line to the summit log file (never to the TUI).
     const log = (level: string, fn: string, msg: string, data: Record<string, unknown> = {}) => {
@@ -207,9 +209,24 @@ export default function harnessSummit(api: any): void {
         if (c?.hasUI !== true) return
         ctx = c
         const pidArgs = harness === 'omp' ? ['--pid', String(process.pid)] : []
+        // pi: name the session this process left (`/new`, `/resume`), so the CLI ends its heartbeat at once.
+        const previousArgs =
+            harness === 'pi' && lastSessionId !== undefined && lastSessionId !== sessionId
+                ? ['--previous', lastSessionId]
+                : []
+        lastSessionId = sessionId
         try {
             armed = parseArmed(
-                await runCli(['hook', 'ext-arm', '--harness', harness, '--session', sessionId, ...pidArgs]),
+                await runCli([
+                    'hook',
+                    'ext-arm',
+                    '--harness',
+                    harness,
+                    '--session',
+                    sessionId,
+                    ...pidArgs,
+                    ...previousArgs,
+                ]),
             )
             watcher?.close()
             watcher = fs.watch(armed.signalPath, onSignal)

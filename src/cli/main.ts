@@ -28,7 +28,7 @@ const USAGE = `usage: harness-summit <command>
   hook claude-file-changed                       Claude Code FileChanged hook (stdin JSON)
   hook claude-prompt-submit                      Claude Code UserPromptSubmit hook (stdin JSON)
   hook ext-session --session <id> --pid <pid>    renew the OMP session file (OMP extension)
-  hook ext-arm --harness <pi|omp> --session <id> [--pid <pid>]
+  hook ext-arm --harness <pi|omp> --session <id> [--pid <pid>] [--previous <id>]
                                                  record the session (omp) and arm its signal file
   notice --host-key <key>                        print the unread notice (empty when none)
   install --harness <list|all> [--dry-run] [--home <dir>]
@@ -73,7 +73,7 @@ async function runHook(args: CliArgs): Promise<void> {
         if (args.session === undefined || args.session === '')
             throw summitError('SUMMIT_BAD_INPUT', 'ext-arm needs --session <id>', 'runHook', { harness })
         const pid = args.pid === undefined ? null : parsePid(args.pid)
-        return emit(await extArm(harness, args.session, pid, he.root))
+        return emit(await extArm(harness, args.session, pid, he.root, args.previous))
     }
     if (args.sub === 'ext-session') {
         if (args.session === undefined || args.session === '')

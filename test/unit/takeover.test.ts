@@ -18,7 +18,7 @@ import { send } from '../../src/flows/send.js'
 import { runTool } from '../../src/server/server.js'
 import { TOOLS } from '../../src/server/tools.js'
 import { resumedCodex } from '../helpers/agents.js'
-import { callFor, errorCode, opencodeMeta, tmpRoot } from '../helpers/env.js'
+import { callFor, errorCode, opencodeMeta, recordingExec, tmpRoot } from '../helpers/env.js'
 import { ageBeat, agentJson, mapOf, moveFolder, onMapRead } from '../helpers/state.js'
 
 describe('name takeover', () => {
@@ -134,6 +134,19 @@ describe('name takeover', () => {
         ageBeat(root, jcx.hostKey, STALE_MS + 5_000)
         await whoami(resumed)
         expect(await aliveOf()).toBe(true)
+    })
+
+    it('mail to a Codex agent whose thread nobody serves is queued: no codex queue call, no paid turn', async () => {
+        const { joined: jcx } = await resumedCodex(root, 'cq', 'T-cq')
+        const exec = recordingExec()
+        const other = callFor(root, 'pi', { exec })
+        await join(other)
+        expect(await send(other, { to: '@cq', message: 'later' })).toMatchObject({
+            wake: 'queued',
+            note: 'cq is not active; the message waits until that session resumes.',
+        })
+        expect(exec.calls).toEqual([])
+        expect(fs.readdirSync(jcx.folder).filter((f) => f.endsWith('.md'))).toHaveLength(1)
     })
 
     it('a Codex holder whose thread nobody serves loses its name only with force (holder-gone)', async () => {

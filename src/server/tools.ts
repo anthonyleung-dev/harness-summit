@@ -88,8 +88,12 @@ export const SendOutput = z.object({
     id: UuidSchema,
     delivered: z.literal(true),
     to: z.object({ uuid: UuidSchema, name: z.string().nullable() }),
-    wake: z.enum(['sent', 'skipped', 'failed']),
+    // sent: the receiver was woken; skipped: nothing unread or already told; failed: the wake did not
+    // run (wakeError says why); queued: the receiver's session is not active, no wake ran, the mail
+    // waits until it resumes (note says so).
+    wake: z.enum(['sent', 'skipped', 'failed', 'queued']),
     wakeError: z.string().optional(),
+    note: z.string().optional(),
 })
 
 // One record of summit_read. `replyHint` is there exactly when the record is not a reply (D1).

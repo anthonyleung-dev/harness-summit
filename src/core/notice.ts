@@ -57,6 +57,11 @@ export function buildNotice(unread: Pick<MessageRecord, 'from'>[]): string | nul
     return `[harness-summit] ${unread.length} unread message(s) from ${senders.join(', ')} in your summit group. Call the summit_read tool to read them.`
 }
 
+// Purpose: the note summit_send returns when the receiver is not active (its mail waits; no wake ran).
+export function queuedNote(label: string): string {
+    return `${label} is not active; the message waits until that session resumes.`
+}
+
 // Purpose: notice for the agent behind a host key, computed from disk. Null when the host has not
 // joined (or its record is stale) or has nothing unread. Used by the Claude hooks and by
 // `harness-summit notice`.

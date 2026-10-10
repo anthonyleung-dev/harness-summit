@@ -5,6 +5,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { beforeAll, describe, expect, it } from 'vitest'
 
+import { beat, beatTime } from '../../src/core/heartbeat.js'
 import { buildNotice } from '../../src/core/notice.js'
 import { signalPathFor } from '../../src/core/paths.js'
 import { readSession, writeSessionSync } from '../../src/core/sessions.js'
@@ -214,5 +215,49 @@ describe('FileChanged never switches the session (team review R2)', () => {
         expect(late.code).toBe(0)
         expect(await readSession(root, 'claude', CLAUDE_PID)).toBe('S2')
         expect(await whoami(call)).toEqual({ joined: false, hostKey: 'claude-S2' })
+    })
+})
+
+describe('mail to a session that ended (/clear, then resume)', () => {
+    it('after /clear a send is queued at once (no ring, no 10 s wait); a resume reports the mail and wakes again', async () => {
+        const root = tmpRoot()
+        const env = { HARNESS_SUMMIT_HOME: root, CLAUDE_PID: '' }
+        const start = (sid: string, source: string) =>
+            runCli(['hook', 'claude-session-start'], { env, stdin: sessionStartInput(source, sid) })
+        await start('S-bob', 'startup')
+        const bob = callFor(root, 'claude', { hostPid: CLAUDE_PID, session: 'S-bob' })
+        const alice = callFor(root, 'claude')
+        const jb = await join(bob)
+        await rename(bob, 'bob')
+        await join(alice)
+        await rename(alice, 'alice')
+        const signalB = signalPathFor(root, jb.hostKey)
+        const rung = () => fs.readFileSync(signalB, 'utf8')
+        // bob runs /clear: the old session's heartbeat ends at once.
+        await start('S-cleared', 'clear')
+        const before = rung()
+        const sent = await send(alice, { to: '@bob', message: 'ping after clear' })
+        expect(sent).toMatchObject({
+            wake: 'queued',
+            note: 'bob is not active; the message waits until that session resumes.',
+        })
+        expect(rung()).toBe(before)
+        // bob resumes the old session: SessionStart reports the unread mail, and its server beats it again.
+        const resumed = await start('S-bob', 'resume')
+        expect(JSON.parse(resumed.stdout).hookSpecificOutput.additionalContext).toBe(buildNotice([{ from: 'alice' }]))
+        await whoami(bob)
+        expect((await send(alice, { to: '@bob', message: 'again' })).wake).toBe('sent')
+    })
+})
+
+describe('UserPromptSubmit with another session id', () => {
+    it('switches the recorded session and ends the old heartbeat', async () => {
+        const root = tmpRoot()
+        const env = { HARNESS_SUMMIT_HOME: root, CLAUDE_PID: '' }
+        await runCli(['hook', 'claude-session-start'], { env, stdin: sessionStartInput('startup', 'S-one') })
+        await beat(root, 'claude-S-one', 'claude')
+        await runCli(['hook', 'claude-prompt-submit'], { env, stdin: JSON.stringify({ session_id: 'S-two' }) })
+        expect(await readSession(root, 'claude', CLAUDE_PID)).toBe('S-two')
+        expect(await beatTime(root, 'claude-S-one')).toBeNull()
     })
 })

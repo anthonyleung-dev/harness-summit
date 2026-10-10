@@ -20,7 +20,7 @@ import { z } from 'zod'
 import { summitError } from './errors.js'
 import { CLEANUP_AGE_MS, isStaleMtime } from './freshness.js'
 import { jsonText, readJsonFile, writeJsonAtomic } from './fsx.js'
-import { beatTime } from './heartbeat.js'
+import { beatTime, endBeat } from './heartbeat.js'
 import { ID_PATTERN, joinHostKey, SESSION_FILE_HARNESSES } from './hostKey.js'
 import { log } from './log.js'
 import { DIR_MODE, FILE_MODE, sessionFile, sessionsDir } from './paths.js'
@@ -50,6 +50,24 @@ function sessionRecord(harness: string, pid: number, sessionId: string, at: Date
 export async function writeSession(root: string, harness: string, pid: number, sessionId: string): Promise<void> {
     await writeJsonAtomic(sessionFile(root, harness, pid), sessionRecord(harness, pid, sessionId, new Date()))
     log('info', 'writeSession', 'session recorded', { harness, pid, sessionId })
+}
+
+// Purpose: record the session that host process `pid` runs now (SessionStart, UserPromptSubmit, the OMP
+// extension's session start or switch). When this switches away from another recorded session (`/clear`,
+// `/new`), end that session's heartbeat at once (endBeat): nobody serves it any more, and a sender must
+// see it not alive now, not 10 s later. Returns the previous session id (null when none or unchanged).
+export async function switchSession(
+    root: string,
+    harness: string,
+    pid: number,
+    sessionId: string,
+): Promise<string | null> {
+    const previous = await readSession(root, harness, pid)
+    await writeSession(root, harness, pid, sessionId)
+    if (previous === null || previous === sessionId) return null
+    await endBeat(root, joinHostKey(harness, previous))
+    log('info', 'switchSession', 'session switched; previous heartbeat ended', { harness, pid, previous, sessionId })
+    return previous
 }
 
 // Purpose: renew the `at` of the session that host process `pid` runs, without ever switching it: write

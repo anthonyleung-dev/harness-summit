@@ -12,13 +12,14 @@
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs/promises'
 
+import type { Alive } from './agents.js'
 import { summitError, toSummitError } from './errors.js'
 import { cliBin, type Exec, type ExecRequest } from './exec.js'
 import { readJsonFile, writeJsonAtomic } from './fsx.js'
 import { withLock } from './lock.js'
 import { log } from './log.js'
 import { scanUnread } from './mailbox.js'
-import { buildNotice } from './notice.js'
+import { buildNotice, queuedNote } from './notice.js'
 import { cursorLock, lastWakeFile } from './paths.js'
 import { pipe, step } from './pipe.js'
 import { LastWakeSchema, type LastWake, type MessageRecord, type Wake } from './schemas.js'
@@ -29,7 +30,8 @@ export const WAKE_DEBOUNCE_MS = 10_000
 export const WAKE_TIMEOUT_MS = 15_000
 const STDERR_EXCERPT = 300
 
-export type WakeOutcome = { wake: 'sent' | 'skipped' } | { wake: 'failed'; wakeError: string }
+export type WakeOutcome =
+    { wake: 'sent' | 'skipped' } | { wake: 'failed'; wakeError: string } | { wake: 'queued'; note: string }
 
 // Purpose: the external command that wakes a codex or opencode receiver; null for signal hosts.
 // The binary comes from SUMMIT_CODEX_BIN / SUMMIT_OPENCODE_BIN when install recorded it.
@@ -149,13 +151,24 @@ const perform = step<WakeCtx>('performWake', async (ctx) => {
     return ctx
 })
 
-// Purpose: wake one receiver after an append. Never throws: a failed wake never fails the send.
+// Purpose: wake one receiver after an append, unless it is not alive (then `queued`). Never throws: a
+// failed wake never fails the send.
 export async function wakeReceiver(input: {
     folder: string
     wake: Wake
     exec: Exec
     now?: number
+    // The receiver's liveness (src/core/agents.ts isAlive). A receiver that is not alive (false: its
+    // session ended or was cleared) gets no wake: no ring nobody watches, no paid `codex queue` or
+    // `opencode` turn for nobody. Its mail waits; a resume reports it (SessionStart additionalContext,
+    // the extension's arm). `label` names it in the note.
+    alive?: Alive
+    label?: string
 }): Promise<WakeOutcome> {
+    if (input.alive === false) {
+        log('info', 'wakeReceiver', 'receiver not active; mail queued, no wake', { folder: input.folder })
+        return { wake: 'queued', note: queuedNote(input.label ?? 'the receiver') }
+    }
     try {
         const ctx = await pipe<WakeCtx>('wake', { ...input }, [decide, perform])
         if (ctx.skipped !== undefined) {

@@ -1,7 +1,7 @@
 // summit_send (SPEC §5, §6): append one record to the receiver's folder, then wake the receiver.
 import { randomUUID } from 'node:crypto'
 
-import { agentExists, agentLabel, inboxLabel, readAgent, requireAgent } from '../core/agents.js'
+import { agentExists, agentLabel, inboxLabel, isAlive, readAgent, requireAgent } from '../core/agents.js'
 import { summitError } from '../core/errors.js'
 import { log } from '../core/log.js'
 import { appendRecord } from '../core/mailbox.js'
@@ -98,12 +98,20 @@ const append = step<SendCtx>('append', async (ctx) => {
     return { ...ctx, record }
 })
 
-// Step: wake the receiver. The notice and the debounce are computed from the receiver's state after
-// the append (src/core/wake.ts); a failed wake never fails the send.
+// Step: wake the receiver when it is active. The notice and the debounce are computed from the receiver's
+// state after the append (src/core/wake.ts); a receiver that is not alive gets `queued` and no wake; a
+// failed wake never fails the send.
 const wake = step<SendCtx>('wake', async (ctx) => {
     const target = need(ctx.target, 'target')
     const folder = agentDir(ctx.call.root, need(ctx.host, 'host').groupKey, target.uuid)
-    const outcome = await wakeReceiver({ folder, wake: target.wake, exec: ctx.call.exec })
+    const alive = await isAlive(ctx.call.root, target)
+    const outcome = await wakeReceiver({
+        folder,
+        wake: target.wake,
+        exec: ctx.call.exec,
+        alive,
+        label: agentLabel(target),
+    })
     return { ...ctx, outcome }
 })
 

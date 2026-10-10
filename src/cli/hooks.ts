@@ -7,13 +7,14 @@ import path from 'node:path'
 import { z } from 'zod'
 
 import { summitError, toSummitError } from '../core/errors.js'
+import { endBeat } from '../core/heartbeat.js'
 import { hostKeyForSession } from '../core/hostKey.js'
 import { log, logFilePath } from '../core/log.js'
 import { noticeForHostKey } from '../core/notice.js'
 import { signalPathFor } from '../core/paths.js'
 import { samePath } from '../core/project.js'
 import type { Harness } from '../core/schemas.js'
-import { readSession, renewSession, writeSession } from '../core/sessions.js'
+import { readSession, renewSession, switchSession } from '../core/sessions.js'
 import { ensureSignal } from '../core/signal.js'
 
 export interface HookResult {
@@ -78,7 +79,7 @@ export async function claudeSessionStart(stdin: string, he: HookEnv): Promise<Ho
     try {
         const pid = claudePid(he.env, he.ppid)
         const hostKey = hostKeyForSession('claude', input.session_id)
-        await writeSession(he.root, 'claude', pid, input.session_id as string)
+        await switchSession(he.root, 'claude', pid, input.session_id as string)
         const { signalPath } = await armSignal(he.root, hostKey)
         const notice = await noticeForHostKey(he.root, hostKey)
         const out = {
@@ -111,7 +112,7 @@ async function refreshSession(
 ): Promise<void> {
     if (sessionId === undefined || sessionId === '') return
     const pid = claudePid(he.env, he.ppid)
-    const write = opts.sameIdOnly === true ? renewSession : writeSession
+    const write = opts.sameIdOnly === true ? renewSession : switchSession
     await write(he.root, 'claude', pid, sessionId).catch((err) =>
         log('warn', fn, 'session refresh failed', { error: toSummitError(err, fn).toJSON() }),
     )
@@ -175,13 +176,18 @@ export async function extArm(
     sessionId: string,
     pid: number | null,
     root: string,
+    previous?: string,
 ): Promise<HookResult> {
     const hostKey = hostKeyForSession(harness, sessionId)
     if (harness === 'omp') {
         if (pid === null) {
             throw summitError('SUMMIT_BAD_INPUT', 'ext-arm for omp needs --pid', 'extArm', { harness, sessionId })
         }
-        await writeSession(root, harness, pid, sessionId)
+        // A switch away from another recorded session ends that session's heartbeat (switchSession).
+        await switchSession(root, harness, pid, sessionId)
+    } else if (previous !== undefined && previous !== '' && previous !== sessionId) {
+        // pi keeps no session file: the extension names the session it left (`/new`, `/resume`).
+        await endBeat(root, hostKeyForSession(harness, previous))
     }
     const armed = await armSignal(root, hostKey)
     log('info', 'extArm', 'armed', { harness, pid, ...armed })

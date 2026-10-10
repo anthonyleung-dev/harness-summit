@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import harnessSummit, { parseArmed } from '../../adapters/pi-omp/harness-summit.js'
 import { sleep } from '../../src/core/freshness.js'
+import { beat, beatTime } from '../../src/core/heartbeat.js'
 import { buildNotice } from '../../src/core/notice.js'
 import { readSession, writeSessionSync } from '../../src/core/sessions.js'
 import { join } from '../../src/flows/join.js'
@@ -156,5 +157,23 @@ describe('pi/OMP extension', () => {
         await send(sender, { to: (await join(piHost)).uuid, message: 'four' })
         await until(() => pi.calls.length >= 5)
         expect(sub.calls).toEqual([])
+    })
+})
+
+describe('pi extension on a session change', () => {
+    it('names the session it left, so its heartbeat ends at once (pi /new)', async () => {
+        const root = tmpRoot()
+        const api = fakeApi(true)
+        harnessSummit(api.api)
+        const ctxFor = (sessionId: string) => ({
+            hasUI: true,
+            isIdle: () => true,
+            sessionManager: { getSessionId: () => sessionId },
+        })
+        await api.handlers.session_start!({}, ctxFor('S-first'))
+        await beat(root, 'pi-S-first', 'pi')
+        await api.handlers.session_start!({}, ctxFor('S-second'))
+        expect(await beatTime(root, 'pi-S-first')).toBeNull()
+        api.handlers.session_shutdown!({}, ctxFor('S-second'))
     })
 })
