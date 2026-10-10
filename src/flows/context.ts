@@ -7,7 +7,7 @@ import { requireHost } from '../core/identity.js'
 import { log } from '../core/log.js'
 import { step } from '../core/pipe.js'
 import type { Harness, HostRecord } from '../core/schemas.js'
-import { readSession } from '../core/sessions.js'
+import { readSession, SESSION_CLOCK_TOLERANCE_MS } from '../core/sessions.js'
 
 // Everything a flow needs to know about the call and the process it runs in.
 export interface CallContext {
@@ -21,6 +21,9 @@ export interface CallContext {
     pid: number
     // pi only: the session id the pi extension put into this server's env (PI_SESSION_ENV), read once.
     sessionEnv?: string
+    // When this server started (epoch ms). A session file written before it, minus
+    // SESSION_CLOCK_TOLERANCE_MS, belongs to a dead process that had the same pid (src/core/sessions.ts).
+    startedAt: number
     exec: Exec
 }
 
@@ -43,10 +46,14 @@ export function need<T>(value: T | undefined, what: string): T {
 }
 
 // Purpose: the session id the host provides for a signal harness (SPEC §3): claude and omp from the
-// session file of the host process (read on every call: `/clear` and `/new` change it), pi from the env;
+// session file of the host process (read on every call: `/clear` and `/new` change it; a file older than
+// this server is not trusted), pi from the env;
 // undefined for codex and opencode (they send ids in `_meta`) and when the host side wrote nothing.
 export async function callSessionId(call: CallContext): Promise<string | undefined> {
-    if (usesSessionFile(call.harness)) return (await readSession(call.root, call.harness, call.hostPid)) ?? undefined
+    if (usesSessionFile(call.harness)) {
+        const notBefore = call.startedAt - SESSION_CLOCK_TOLERANCE_MS
+        return (await readSession(call.root, call.harness, call.hostPid, { notBefore })) ?? undefined
+    }
     return call.harness === 'pi' ? call.sessionEnv : undefined
 }
 

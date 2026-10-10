@@ -3,7 +3,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { logsDir, summitRoot } from './paths.js'
+import { DIR_MODE, FILE_MODE, logsDir, summitRoot } from './paths.js'
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
 
@@ -52,8 +52,8 @@ export function log(level: LogLevel, fn: string, msg: string, data: Record<strin
 // Purpose: append one line to the log file, swallowing errors (see log()).
 function writeLogLine(file: string, line: string): void {
     try {
-        fs.mkdirSync(path.dirname(file), { recursive: true })
-        fs.appendFileSync(file, line + '\n')
+        fs.mkdirSync(path.dirname(file), { recursive: true, mode: DIR_MODE })
+        fs.appendFileSync(file, line + '\n', { mode: FILE_MODE })
     } catch {
         // ignore: see log()
     }

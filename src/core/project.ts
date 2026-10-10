@@ -8,7 +8,7 @@ import { captureSync, cliBin, type Exec } from './exec.js'
 import { pathExists } from './fsx.js'
 import { CODEX_TURN_META_KEY, opencodeSessionId, type RequestMeta } from './hostKey.js'
 import { log } from './log.js'
-import type { CwdSource, Harness } from './schemas.js'
+import { isReservedName, type CwdSource, type Harness } from './schemas.js'
 
 export const GROUP_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/
 const HEX32 = /^[0-9a-f]{32}$/
@@ -116,10 +116,10 @@ export function defaultGroupKey(projectRoot: string): string {
 
 // Purpose: validate a named group (SPEC §4) and return it as the group key.
 export function namedGroupKey(name: string): string {
-    if (!GROUP_NAME_PATTERN.test(name) || HEX32.test(name)) {
+    if (!GROUP_NAME_PATTERN.test(name) || HEX32.test(name) || isReservedName(name)) {
         throw summitError(
             'SUMMIT_BAD_GROUP',
-            'group name must match ^[a-z0-9][a-z0-9-]{0,31}$ and not be 32 hex characters',
+            'group name must match ^[a-z0-9][a-z0-9-]{0,31}$, not be 32 hex characters and not be a Windows device name',
             'namedGroupKey',
             { name },
         )

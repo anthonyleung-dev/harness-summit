@@ -1,6 +1,7 @@
 // Unit tests: record format and the tolerant parser (REVIEW M2: damaged content never throws).
 import { describe, expect, it } from 'vitest'
 
+import { buildNotice } from '../../src/core/notice.js'
 import { formatRecord, parseRecords } from '../../src/core/records.js'
 import { sampleRecord as rec } from '../helpers/env.js'
 
@@ -65,5 +66,23 @@ describe('records', () => {
         const parsed = parseRecords(Buffer.from(bad + good))
         expect(parsed.records.map((r) => r.body)).toEqual(['fine'])
         expect(parsed.corrupt[0]).toMatchObject({ offset: 0, reason: 'no trailer' })
+    })
+})
+
+describe('sender labels (team review R1, C)', () => {
+    it('a record whose sender is not a display name or a uuid is a corrupt span, never a message', () => {
+        const good = formatRecord(rec())
+        for (const from of ['%PATH%', '!USERNAME!', 'a&calc', 'x"y', 'two words']) {
+            const forged = good.replace('from: alice', `from: ${from}`)
+            const parsed = parseRecords(Buffer.from(forged))
+            expect(parsed.records).toEqual([])
+            expect(parsed.corrupt).toHaveLength(1)
+        }
+    })
+
+    it('the notice names only valid sender labels', () => {
+        expect(buildNotice([{ from: '%PATH%' }, { from: 'bob' }])).toBe(
+            '[harness-summit] 2 unread message(s) from unknown, bob in your summit group. Call the summit_read tool to read them.',
+        )
     })
 })

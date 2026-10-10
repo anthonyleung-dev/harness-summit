@@ -7,9 +7,9 @@ import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { STALE_MS } from '../../src/core/heartbeat.js'
+import { sleep, STALE_MS } from '../../src/core/freshness.js'
 import { readHost } from '../../src/core/identity.js'
-import { LOCK_STALE_MS, sleep, withLock } from '../../src/core/lock.js'
+import { withLock } from '../../src/core/lock.js'
 import { agentDir, cursorLock, hostsDir, membersLock } from '../../src/core/paths.js'
 import { group } from '../../src/flows/group.js'
 import { join } from '../../src/flows/join.js'
@@ -226,8 +226,8 @@ describe('group move under the group lock', () => {
                 await until(() => fs.existsSync(membersLock(root, 'g2')))
                 // As if the move had held the lock for a minute: its lease refresh makes it fresh again,
                 // so a waiter never breaks it.
-                ageFile(membersLock(root, 'g2'), LOCK_STALE_MS * 6)
-                await until(() => fileAge(membersLock(root, 'g2')) < LOCK_STALE_MS, 6_000)
+                ageFile(membersLock(root, 'g2'), STALE_MS * 6)
+                await until(() => fileAge(membersLock(root, 'g2')) < STALE_MS, 6_000)
                 renaming = errorCode(rename(b, 'x'))
                 await sleep(300)
                 expect(agentJson(agentDir(root, 'g2', jb.uuid)).name).toBeNull()

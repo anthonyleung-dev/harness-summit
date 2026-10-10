@@ -9,9 +9,11 @@
 // file passes its arguments on with `%*` (an npm shim runs `node.exe <script> %*`), and cmd.exe parses
 // the expanded line a second time. cross-spawn doubles them only for shims under `node_modules/.bin`;
 // a global npm shim (`%APPDATA%\npm\codex.cmd`) has the same `%*` line, so here every batch file gets
-// them. Known limits: `%` (variable expansion) and `!` (delayed expansion, off by default) are not
-// guaranteed to survive cmd.exe, and a line break cannot pass at all (refused). The wake payloads hold
-// neither (src/core/wake.ts: names and uuids only).
+// them. cmd.exe expands `%VAR%` (and `%VAR:a=b%`) before any caret counts, and `!VAR!` under delayed
+// expansion, and a line break ends the command: none of them can be escaped reliably, so an argument or
+// a batch path that holds one is refused (SUMMIT_BAD_INPUT). `/v:off` turns delayed expansion off for
+// the shell we start. The wake payloads never hold them (src/core/schemas.ts SenderLabelSchema: notices
+// name senders by display name or uuid only).
 import { summitError } from './errors.js'
 
 // cmd.exe metacharacters (cross-spawn's list).
@@ -22,14 +24,22 @@ export function isBatchFile(file: string): boolean {
     return /\.(cmd|bat)$/i.test(file)
 }
 
+// Characters cmd.exe acts on before escaping applies: variable expansion and line breaks.
+const UNSAFE = /[%!\r\n]/
+
+// Purpose: refuse a value that cmd.exe would expand or cut (`%`, `!`, a line break).
+function assertCmdSafe(value: string, what: string, fn: string): void {
+    if (UNSAFE.test(value)) {
+        throw summitError('SUMMIT_BAD_INPUT', `${what} for a batch file cannot hold %, ! or a line break`, fn, {
+            value,
+        })
+    }
+}
+
 // Purpose: quote one argument for the C runtime parser of the program the batch file starts, then
 // caret-escape it twice for the two cmd.exe parses (see the header).
 export function escapeCmdArg(arg: string): string {
-    if (/[\r\n]/.test(arg)) {
-        throw summitError('SUMMIT_BAD_INPUT', 'an argument for a batch file cannot hold a line break', 'escapeCmdArg', {
-            arg,
-        })
-    }
+    assertCmdSafe(arg, 'an argument', 'escapeCmdArg')
     let quoted = arg.replace(/(\\*)"/g, '$1$1\\"')
     quoted = quoted.replace(/(\\*)$/, '$1$1')
     quoted = `"${quoted}"`
@@ -42,12 +52,13 @@ export function batchCommandLine(file: string, args: string[]): string {
     if (file.includes('"')) {
         throw summitError('SUMMIT_BAD_INPUT', 'a batch file path cannot hold a quote', 'batchCommandLine', { file })
     }
+    assertCmdSafe(file, 'a batch file path', 'batchCommandLine')
     return [`"${file}"`, ...args.map(escapeCmdArg)].join(' ')
 }
 
-// Purpose: the cmd.exe argv that runs a batch file: `/d` (no AutoRun commands), `/s` (strip exactly the
-// outer quotes), `/c` (run the line, then exit). The caller spawns it with windowsVerbatimArguments, so
+// Purpose: the cmd.exe argv that runs a batch file: `/d` (no AutoRun commands), `/v:off` (no delayed
+// expansion), `/s` (strip exactly the outer quotes), `/c` (run the line, then exit). The caller spawns it with windowsVerbatimArguments, so
 // Node passes the line unchanged.
 export function cmdArgs(file: string, args: string[]): string[] {
-    return ['/d', '/s', '/c', `"${batchCommandLine(file, args)}"`]
+    return ['/d', '/v:off', '/s', '/c', `"${batchCommandLine(file, args)}"`]
 }

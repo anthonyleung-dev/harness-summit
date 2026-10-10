@@ -1,5 +1,5 @@
 // Shared test helpers that build agents through the real flows.
-import { STALE_MS } from '../../src/core/heartbeat.js'
+import { STALE_MS } from '../../src/core/freshness.js'
 import { join } from '../../src/flows/join.js'
 import { rename } from '../../src/flows/rename.js'
 import { callFor, codexMeta, fakePid } from './env.js'

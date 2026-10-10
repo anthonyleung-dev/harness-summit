@@ -2,11 +2,12 @@
 import fs from 'node:fs/promises'
 
 import { hasErrno, summitError } from './errors.js'
+import { confirmGone, isStaleMtime } from './freshness.js'
 import { pathExists, readJsonFile, writeJsonAtomic } from './fsx.js'
-import { beatTime, confirmGone, isFresh } from './heartbeat.js'
+import { beatTime } from './heartbeat.js'
 import { log } from './log.js'
 import { lockGroup } from './members.js'
-import { agentDir, agentFile, aliveFile, groupDir } from './paths.js'
+import { agentDir, agentFile, aliveFile, DIR_MODE, groupDir } from './paths.js'
 import { AgentRecordSchema, UUID_PATTERN, type AgentRecord } from './schemas.js'
 
 export type Alive = boolean | 'unknown'
@@ -42,7 +43,7 @@ export async function writeAgent(
     agent: AgentRecord,
     opts: { create?: boolean } = {},
 ): Promise<void> {
-    if (opts.create !== false) await fs.mkdir(agentDir(root, groupKey, agent.uuid), { recursive: true })
+    if (opts.create !== false) await fs.mkdir(agentDir(root, groupKey, agent.uuid), { recursive: true, mode: DIR_MODE })
     await writeJsonAtomic(agentFile(root, groupKey, agent.uuid), AgentRecordSchema.parse(agent), {
         mkdir: opts.create !== false,
     })
@@ -99,10 +100,11 @@ export async function listAgents(root: string, groupKey: string): Promise<AgentR
 }
 
 // Purpose: liveness of an agent (SPEC §7), from the heartbeat of its host key: "unknown" for OpenCode
-// (one shared server outlives every session) and for an agent that was never beaten (it joined before
-// heartbeats existed); true while the heartbeat is fresh; false when it is older than STALE_MS. With
-// `confirm` (a decision that declares the agent gone), a stale heartbeat gets the second look first, and
-// any beat during it means alive.
+// (one shared server outlives every session); true while the heartbeat is fresh (src/core/freshness.ts);
+// false when it is stale or missing (every agent is beaten at join, so a missing file was cleaned up
+// after its session ended, or the agent joined before heartbeats existed). With `confirm` (a decision
+// that declares the agent gone), a stale heartbeat gets the second look first, and any beat during it
+// means alive.
 export async function isAlive(
     root: string,
     agent: Pick<AgentRecord, 'harness' | 'hostKey'>,
@@ -110,8 +112,7 @@ export async function isAlive(
 ): Promise<Alive> {
     if (agent.harness === 'opencode') return 'unknown'
     const seen = await beatTime(root, agent.hostKey)
-    if (seen === null) return 'unknown'
-    if (isFresh(seen)) return true
+    if (seen !== null && !isStaleMtime(seen)) return true
     if (opts.confirm === true && !(await confirmGone(aliveFile(root, agent.hostKey), seen))) return true
     return false
 }

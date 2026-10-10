@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
+import { signalPathFor } from '../../src/core/paths.js'
 import { tmpDir } from '../helpers/env.js'
 import { McpProc } from '../helpers/mcp.js'
 
@@ -62,7 +63,7 @@ describe('two claude-style servers (distinct ppids via a Node parent)', () => {
 
         const s1 = await a.call('summit_send', { to: '@bob', message: 'please review --- this\n---\nline' })
         expect(s1).toMatchObject({ delivered: true, wake: 'sent', to: { name: 'bob' } })
-        const signalB = path.join(root, '.wake', `${jb.hostKey}.signal`)
+        const signalB = signalPathFor(root, jb.hostKey)
         expect(fs.readFileSync(signalB, 'utf8')).toMatch(/^\d{4}-\d\d-\d\dT.*Z\n$/)
 
         const r1 = await b.call('summit_read')

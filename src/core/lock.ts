@@ -7,7 +7,7 @@
 //
 // A lock is a lease (src/core/lease.ts): right after the create and then every LEASE_REFRESH_MS while it
 // holds the lock (for at most LOCK_MAX_HOLD_MS), the holder sets the lock file's mtime to now. A lock is
-// stale when its mtime is older than LOCK_STALE_MS (its holder stopped refreshing: it died, or it hangs)
+// stale when its mtime is older than STALE_MS (its holder stopped refreshing: it died, or it hangs)
 // and a second look confirms it (no refresh while the waiter waits SECOND_LOOK_MS, so a clock jump or a
 // suspend never breaks a live holder), or when it holds a token that this process abandoned (its release
 // failed). No OS process inspection is involved: the same rule runs on Linux, macOS and Windows.
@@ -24,12 +24,12 @@ import path from 'node:path'
 import { z } from 'zod'
 
 import { hasErrno, summitError } from './errors.js'
-import { readTextFile, renameRetry } from './fsx.js'
-import { confirmGone } from './heartbeat.js'
-import { startLease } from './lease.js'
+import { confirmGone, isStaleMtime, mtimeOf, sleep, STALE_MS } from './freshness.js'
+import { isBusyErrno, readTextFile, renameRetry } from './fsx.js'
+import { LEASE_REFRESH_MS, LOCK_MAX_HOLD_MS, startLease } from './lease.js'
 import { log } from './log.js'
+import { DIR_MODE, FILE_MODE } from './paths.js'
 
-export const LOCK_STALE_MS = 10_000
 const LOCK_TIMEOUT_MS = 15_000
 
 export interface LockOptions<T = unknown> {
@@ -56,11 +56,6 @@ interface LockFile {
 // stale at once for every later caller in this process: nobody refreshes or releases it any more.
 const abandonedTokens = new Set<string>()
 
-// Purpose: wait `ms` milliseconds (the one sleep helper; tests import it too).
-export function sleep(ms: number): Promise<void> {
-    return new Promise((r) => setTimeout(r, ms))
-}
-
 // Purpose: the one owner line format (`<token> <ISO time>`, parsed by parseLockOwner).
 export function formatLockOwner(token: string, at = new Date()): string {
     return `${token} ${at.toISOString()}\n`
@@ -76,32 +71,31 @@ export function parseLockOwner(content: string): LockOwner | null {
     return parsed.success ? parsed.data : null
 }
 
-// Purpose: tell whether a lock file is stale: not refreshed for LOCK_STALE_MS, or holding a token this
+// Purpose: tell whether a lock file is stale: not refreshed for STALE_MS, or holding a token this
 // process abandoned. A lock without a valid owner line (a holder died between the create and the
 // write) is stale by the same age rule.
 function isStale(lock: LockFile): boolean {
     if (isAbandoned(lock)) return true
-    const age = Date.now() - lock.mtimeMs
-    if (age > LOCK_STALE_MS) log('debug', 'isStale', 'lock not refreshed in time', { age })
-    return age > LOCK_STALE_MS
+    const stale = isStaleMtime(lock.mtimeMs)
+    if (stale) log('debug', 'isStale', 'lock not refreshed in time', { age: Date.now() - lock.mtimeMs })
+    return stale
 }
 
 // Purpose: read a lock file, or null when it does not exist (also when its folder moved away).
 async function readLock(lockPath: string): Promise<LockFile | null> {
     const content = await readTextFile(lockPath)
-    const stat = await fs.stat(lockPath).catch(() => null)
-    return content === null || stat === null ? null : { content, mtimeMs: stat.mtimeMs }
+    const mtimeMs = await mtimeOf(lockPath).catch(() => null)
+    return content === null || mtimeMs === null ? null : { content, mtimeMs }
 }
 
 // Errno codes that mean "the name is still taken" on Windows: after a release, a file system without
 // POSIX delete semantics (FAT, exFAT, older NTFS drivers) keeps the name "delete pending" for a moment,
 // and a create then fails with EPERM, not EEXIST (XPLAT-AUDIT D4). On Linux and macOS these codes are a
 // real refusal and stay SUMMIT_IO.
-const WIN_TAKEN = process.platform === 'win32' ? ['EPERM', 'EACCES', 'EBUSY'] : []
-
-// Purpose: tell whether a create error means "another holder has the name" (retry later).
-function isTaken(err: unknown): boolean {
-    return hasErrno(err, 'EEXIST') || WIN_TAKEN.some((c) => hasErrno(err, c))
+// Purpose: tell whether a create error means "another holder has the name" (retry later): EEXIST, and on
+// Windows also the busy codes (isBusyErrno, src/core/fsx.ts).
+export function isTaken(err: unknown, platform: NodeJS.Platform = process.platform): boolean {
+    return hasErrno(err, 'EEXIST') || (platform === 'win32' && isBusyErrno(err))
 }
 
 // Purpose: try once to create the lock with our owner line; true when we hold it. With `missingOk`, a
@@ -109,7 +103,7 @@ function isTaken(err: unknown): boolean {
 async function tryCreate(lockPath: string, token: string, missingOk = false): Promise<boolean> {
     let created = false
     try {
-        const fh = await fs.open(lockPath, 'wx')
+        const fh = await fs.open(lockPath, 'wx', FILE_MODE)
         created = true
         try {
             await fh.writeFile(formatLockOwner(token))
@@ -121,7 +115,7 @@ async function tryCreate(lockPath: string, token: string, missingOk = false): Pr
         }
         return true
     } catch (err) {
-        // A file without our owner line would block every waiter for LOCK_STALE_MS.
+        // A file without our owner line would block every waiter for STALE_MS.
         if (created) await fs.rm(lockPath, { force: true }).catch(() => undefined)
         if (isTaken(err) || (missingOk && hasErrno(err, 'ENOENT'))) return false
         throw summitError('SUMMIT_IO', `cannot create ${lockPath}`, 'tryCreate', { lockPath }, err)
@@ -138,6 +132,12 @@ async function removeByTomb(file: string, seen: string): Promise<boolean> {
         await renameRetry(file, tomb)
     } catch (err) {
         if (hasErrno(err, 'ENOENT')) return false
+        // Still blocked after the retries (Windows: another program holds the file): not broken now;
+        // the waiter tries again on its next round, until its LOCK_TIMEOUT_MS.
+        if (isBusyErrno(err)) {
+            log('warn', 'removeByTomb', 'lock file busy; break retried later', { file, error: String(err) })
+            return false
+        }
         throw summitError('SUMMIT_IO', `cannot break ${file}`, 'removeByTomb', { file }, err)
     }
     const moved = await readTextFile(tomb)
@@ -162,7 +162,7 @@ async function takeBreakLock(lockPath: string): Promise<string | null> {
     const token = randomUUID()
     if (await tryCreate(breakPath, token, true)) return token
     const held = await readLock(breakPath)
-    if (held !== null && isStale(held) && (await removeByTomb(breakPath, held.content))) {
+    if (held !== null && (await isConfirmedStale(breakPath, held)) && (await removeByTomb(breakPath, held.content))) {
         log('warn', 'takeBreakLock', 'broke a stale break lock', { breakPath, owner: held.content.trim() })
     }
     return null
@@ -191,12 +191,19 @@ function isAbandoned(lock: LockFile): boolean {
     return owner !== null && abandonedTokens.has(owner.token)
 }
 
-// Purpose: break the lock when it is stale. A lock stale by age gets the second look first (a refresh
-// meanwhile means its holder lives). True when this call removed it.
+// Purpose: tell whether a lock (or break lock) file is stale for sure: abandoned by this process, or stale
+// by age and still untouched after the second look (a refresh, a release or a new holder meanwhile
+// means it lives). The break lock gets the same look: a forward clock jump must not let a second
+// breaker tomb the break lock of a breaker that is working.
+async function isConfirmedStale(file: string, lock: LockFile): Promise<boolean> {
+    if (!isStale(lock)) return false
+    return isAbandoned(lock) || (await confirmGone(file, lock.mtimeMs))
+}
+
+// Purpose: break the lock when it is stale for sure (isConfirmedStale). True when this call removed it.
 async function breakIfStale(lockPath: string): Promise<boolean> {
     const seen = await readLock(lockPath)
-    if (seen === null || !isStale(seen)) return false
-    if (!isAbandoned(seen) && !(await confirmGone(lockPath, seen.mtimeMs))) return false
+    if (seen === null || !(await isConfirmedStale(lockPath, seen))) return false
     return await breakStaleLock(lockPath, seen.content)
 }
 
@@ -205,7 +212,7 @@ async function acquireLock(lockPath: string, mkdir: boolean): Promise<string> {
     const token = randomUUID()
     const started = Date.now()
     let delay = 10
-    if (mkdir) await fs.mkdir(path.dirname(lockPath), { recursive: true })
+    if (mkdir) await fs.mkdir(path.dirname(lockPath), { recursive: true, mode: DIR_MODE })
     for (;;) {
         if (await tryCreate(lockPath, token)) return token
         if (await breakIfStale(lockPath)) continue
@@ -273,7 +280,7 @@ async function dropCarriedBreakFiles(lockPath: string): Promise<void> {
 // the move (its old path is gone), which is fine: the release follows at once. A moved lock leaves no break file of its old path behind in its new folder (E5).
 export async function withLock<T>(lockPath: string, fn: () => Promise<T>, opts: LockOptions<T> = {}): Promise<T> {
     const token = await acquireLock(lockPath, opts.mkdir !== false)
-    const stopLease = startLease(lockPath, token)
+    const stopLease = startLease(lockPath, token, LEASE_REFRESH_MS, LOCK_MAX_HOLD_MS)
     let releaseAt = lockPath
     try {
         const result = await fn()

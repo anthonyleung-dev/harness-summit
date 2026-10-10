@@ -4,7 +4,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import harnessSummit, { parseArmed } from '../../adapters/pi-omp/harness-summit.js'
-import { sleep } from '../../src/core/lock.js'
+import { sleep } from '../../src/core/freshness.js'
 import { buildNotice } from '../../src/core/notice.js'
 import { join } from '../../src/flows/join.js'
 import { whoami } from '../../src/flows/query.js'

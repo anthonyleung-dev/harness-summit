@@ -4,7 +4,7 @@
 import fs from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
-import { sleep } from '../../src/core/lock.js'
+import { sleep } from '../../src/core/freshness.js'
 import { codexMeta, fakeBin, tmpDir } from '../helpers/env.js'
 import { McpProc } from '../helpers/mcp.js'
 

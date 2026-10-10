@@ -46,7 +46,9 @@ export function installLaunch(): Launch {
     return { node: process.execPath, cli, env: harnessBinEnv() }
 }
 
-// Purpose: the launch used by the repo's dev plugin (`claude --plugin-dir plugins/claude`).
+// Purpose: the launch used by the repo's dev plugin (`claude --plugin-dir plugins/claude`). Dev only: it
+// starts the bare name `node` from PATH and the CLI relative to the checkout; install never ships it
+// (installed hooks and servers use absolute paths, installLaunch).
 export function devPluginLaunch(): Launch {
     return { node: 'node', cli: '${CLAUDE_PLUGIN_ROOT}/../../dist/cli.js' }
 }

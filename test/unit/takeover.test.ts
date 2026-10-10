@@ -7,7 +7,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { STALE_MS } from '../../src/core/heartbeat.js'
+import { STALE_MS } from '../../src/core/freshness.js'
 import { readMembers } from '../../src/core/members.js'
 import { group } from '../../src/flows/group.js'
 import { join } from '../../src/flows/join.js'

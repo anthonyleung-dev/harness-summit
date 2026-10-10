@@ -81,16 +81,23 @@ export function findOnPath(
     env: NodeJS.ProcessEnv = process.env,
 ): string | null {
     const delimiter = platform === 'win32' ? ';' : ':'
-    for (const dir of envPath.split(delimiter).filter(Boolean)) {
+    // A relative entry (`.`, `bin`) would resolve against the caller's cwd, which an attacker may own: skip it.
+    for (const dir of envPath.split(delimiter).filter((d) => d !== '' && pathOf(platform).isAbsolute(d))) {
         for (const file of candidates(path.join(dir, bin), platform, env))
             if (isExecutable(file, platform, env)) return file
     }
     return null
 }
 
-// Purpose: the file to spawn for `cmd`: a path (it holds a separator) is used as it is, or with a PATHEXT
-// extension on Windows; a bare name is looked up on the PATH of `env`. Null when nothing executable
-// is found (the spawn then fails with ENOENT, a structured SUMMIT_EXEC_FAILED).
+// Purpose: the path functions of `platform` (win32 or POSIX rules, whatever this process runs on).
+function pathOf(platform: NodeJS.Platform): typeof path.posix {
+    return platform === 'win32' ? path.win32 : path.posix
+}
+
+// Purpose: the absolute file to spawn for `cmd`: a path (it holds a separator) is made absolute and used
+// as it is, or with a PATHEXT extension on Windows; a bare name is looked up on the absolute entries of
+// the PATH of `env`. Null when nothing executable is found: the caller never hands a bare name to libuv,
+// whose own Windows search would try the current directory.
 export function resolveCommand(
     cmd: string,
     env: NodeJS.ProcessEnv = process.env,
@@ -98,7 +105,16 @@ export function resolveCommand(
 ): string | null {
     const isPath = cmd.includes('/') || (platform === 'win32' && cmd.includes('\\'))
     if (!isPath) return findOnPath(cmd, env.PATH ?? env.Path ?? '', platform, env)
-    return candidates(cmd, platform, env).find((f) => isExecutable(f, platform, env)) ?? null
+    const absolute = pathOf(platform).isAbsolute(cmd) ? cmd : pathOf(platform).resolve(cmd)
+    return candidates(absolute, platform, env).find((f) => isExecutable(f, platform, env)) ?? null
+}
+
+// Purpose: the absolute cmd.exe: `ComSpec` when it is an absolute path, else `<SystemRoot>\System32\cmd.exe`
+// (never the bare name `cmd.exe`, which a PATH or cwd entry could shadow).
+function comspecOf(env: NodeJS.ProcessEnv): string {
+    const comspec = env.ComSpec ?? env.COMSPEC
+    if (comspec !== undefined && path.win32.isAbsolute(comspec)) return comspec
+    return path.win32.join(env.SystemRoot ?? env.SYSTEMROOT ?? 'C:\\Windows', 'System32', 'cmd.exe')
 }
 
 // How the door starts one command: the file, its argv, and whether Node must pass the argv unchanged
@@ -109,20 +125,23 @@ export interface SpawnPlan {
     verbatim: boolean
 }
 
-// Purpose: the one spawn plan (XPLAT-AUDIT B4): resolve `cmd`; on Windows run a `.cmd`/`.bat` file through
-// `cmd.exe /d /s /c` with safely quoted arguments, and spawn anything else directly. Never a shell for
-// anything but a batch file.
+// Purpose: the one spawn plan (XPLAT-AUDIT B4): resolve `cmd` to an absolute file (or fail with a
+// structured ENOENT, SUMMIT_EXEC_FAILED); on Windows run a `.cmd`/`.bat` file through
+// `cmd.exe /d /v:off /s /c` with safely quoted arguments, and spawn anything else directly. Never a shell
+// for anything but a batch file.
 export function spawnPlan(
     cmd: string,
     args: string[],
     env: NodeJS.ProcessEnv = process.env,
     platform: NodeJS.Platform = process.platform,
 ): SpawnPlan {
-    const file = resolveCommand(cmd, env, platform) ?? cmd
-    if (platform === 'win32' && isBatchFile(file)) {
-        const comspec = env.ComSpec ?? env.COMSPEC ?? 'cmd.exe'
-        return { file: comspec, args: cmdArgs(file, args), verbatim: true }
+    const file = resolveCommand(cmd, env, platform)
+    if (file === null) {
+        const enoent = Object.assign(new Error(`spawn ${cmd} ENOENT`), { code: 'ENOENT' })
+        throw summitError('SUMMIT_EXEC_FAILED', `cannot run ${cmd}: not found on PATH`, 'spawnPlan', { cmd }, enoent)
     }
+    if (platform === 'win32' && isBatchFile(file))
+        return { file: comspecOf(env), args: cmdArgs(file, args), verbatim: true }
     return { file, args, verbatim: false }
 }
 
@@ -152,6 +171,7 @@ async function capture(req: ExecRequest, timeoutMs: number): Promise<CaptureResu
     if (recordIfDryRun('capture', req)) return { code: 0, stdout: '', stderr: '' }
     const env = req.env ?? process.env
     const plan = spawnPlan(req.cmd, req.args, env)
+    log('debug', 'exec.capture', 'spawning', { cmd: req.cmd, file: plan.file })
     return await new Promise<CaptureResult>((resolve, reject) => {
         const child = spawn(plan.file, plan.args, {
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -186,7 +206,13 @@ async function capture(req: ExecRequest, timeoutMs: number): Promise<CaptureResu
 // when it fails (spawn error, non-zero exit, timeout). Used where a caller must stay synchronous
 // (`git rev-parse` in src/core/project.ts).
 export function captureSync(cmd: string, args: string[], opts: { cwd: string; timeoutMs: number }): string | null {
-    const plan = spawnPlan(cmd, args)
+    let plan: SpawnPlan
+    try {
+        plan = spawnPlan(cmd, args)
+    } catch (err) {
+        log('debug', 'captureSync', 'command not found', { cmd, error: String(err) })
+        return null
+    }
     const res = spawnSync(plan.file, plan.args, {
         cwd: opts.cwd,
         stdio: ['ignore', 'pipe', 'ignore'],

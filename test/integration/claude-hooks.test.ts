@@ -6,6 +6,7 @@ import path from 'node:path'
 import { beforeAll, describe, expect, it } from 'vitest'
 
 import { buildNotice } from '../../src/core/notice.js'
+import { signalPathFor } from '../../src/core/paths.js'
 import { readSession } from '../../src/core/sessions.js'
 import { join } from '../../src/flows/join.js'
 import { whoami } from '../../src/flows/query.js'
@@ -14,7 +15,9 @@ import { rename } from '../../src/flows/rename.js'
 import { send } from '../../src/flows/send.js'
 import { callFor, runCli, tmpRoot } from '../helpers/env.js'
 
-const CLAUDE_PID = 3009995
+// The hook's parent: runCli starts the CLI straight from this test process, as claude starts an
+// exec-form hook (no shell), so this process plays the claude process.
+const CLAUDE_PID = process.pid
 const SID = '1bf60fec-35ac-496b-9fc6-915711f7e85f'
 const notice = buildNotice([{ from: 'alice' }])
 
@@ -40,8 +43,8 @@ const fileChangedInput = (filePath: string, event = 'change') =>
 
 describe('claude hooks', () => {
     const root = tmpRoot()
-    const env = { HARNESS_SUMMIT_HOME: root, CLAUDE_PID: String(CLAUDE_PID) }
-    const signal = path.join(root, '.wake', `claude-${SID}.signal`)
+    const env = { HARNESS_SUMMIT_HOME: root, CLAUDE_PID: '' }
+    const signal = signalPathFor(root, `claude-${SID}`)
     const receiver = callFor(root, 'claude', { hostPid: CLAUDE_PID, session: SID })
     const sender = callFor(root, 'claude')
 
@@ -73,6 +76,14 @@ describe('claude hooks', () => {
         const r = await runCli(['hook', 'claude-file-changed'], { env, stdin: fileChangedInput(signal) })
         expect(r).toEqual({ code: 2, stdout: '', stderr: notice + '\n' })
         expect(r.stderr).not.toContain('secret body')
+        // The same file written another way (Windows: forward slashes and a lower-case drive letter;
+        // elsewhere: a `..` segment) is still our signal: both sides go through the one path normalizer.
+        const other =
+            process.platform === 'win32'
+                ? signal[0]!.toLowerCase() + signal.slice(1).replace(/\\/g, '/')
+                : `${path.dirname(signal)}/../.wake/${path.basename(signal)}`
+        const again = await runCli(['hook', 'claude-file-changed'], { env, stdin: fileChangedInput(other) })
+        expect(again.code).toBe(2)
     })
 
     it('SessionStart on resume re-arms the same path without truncating, and adds the unread notice', async () => {
@@ -99,16 +110,15 @@ describe('claude hooks', () => {
         expect(quiet).toEqual({ code: 0, stdout: '', stderr: '' })
     })
 
-    it('falls back to the hook parent pid when CLAUDE_PID is unset', async () => {
+    it('keys the session by the hook parent pid; an inherited CLAUDE_PID that differs is ignored', async () => {
         const r = await runCli(['hook', 'claude-session-start'], {
-            env: { HARNESS_SUMMIT_HOME: root, CLAUDE_PID: '' },
+            env: { HARNESS_SUMMIT_HOME: root, CLAUDE_PID: '424242' },
             stdin: sessionStartInput('startup', 'S-parent'),
             viaParent: true,
         })
-        expect(JSON.parse(r.stdout).hookSpecificOutput.watchPaths).toEqual([
-            path.join(root, '.wake', 'claude-S-parent.signal'),
-        ])
+        expect(JSON.parse(r.stdout).hookSpecificOutput.watchPaths).toEqual([signalPathFor(root, 'claude-S-parent')])
         expect(await readSession(root, 'claude', r.parentPid as number)).toBe('S-parent')
+        expect(await readSession(root, 'claude', 424242)).toBeNull()
     })
 
     it('SessionStart without a session id arms nothing and never fails the session', async () => {
@@ -131,7 +141,7 @@ describe('claude hooks', () => {
         })
         expect(JSON.parse(r.stdout).hookSpecificOutput).toEqual({
             hookEventName: 'SessionStart',
-            watchPaths: [path.join(root, '.wake', 'claude-S-cleared.signal')],
+            watchPaths: [signalPathFor(root, 'claude-S-cleared')],
         })
         // The same claude process (same pid) now runs session S-cleared: its server sees a new host key.
         expect(await whoami(receiver)).toEqual({ joined: false, hostKey: 'claude-S-cleared' })

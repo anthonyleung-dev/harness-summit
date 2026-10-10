@@ -6,7 +6,9 @@ import path from 'node:path'
 import type { z } from 'zod'
 
 import { hasErrno, summitError } from './errors.js'
+import { sleep } from './freshness.js'
 import { log } from './log.js'
+import { DIR_MODE, FILE_MODE } from './paths.js'
 
 // Purpose: read a text file, or null when it does not exist. Other read errors are SUMMIT_IO.
 export async function readTextFile(file: string): Promise<string | null> {
@@ -49,8 +51,8 @@ export function jsonText(value: unknown, indent = 2): string {
 export async function writeJsonAtomic(file: string, data: unknown, opts: { mkdir?: boolean } = {}): Promise<void> {
     const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`
     try {
-        if (opts.mkdir !== false) await fs.mkdir(path.dirname(file), { recursive: true })
-        await fs.writeFile(tmp, jsonText(data))
+        if (opts.mkdir !== false) await fs.mkdir(path.dirname(file), { recursive: true, mode: DIR_MODE })
+        await fs.writeFile(tmp, jsonText(data), { mode: FILE_MODE })
         await renameRetry(tmp, file)
     } catch (err) {
         await fs.rm(tmp, { force: true }).catch(() => undefined)
@@ -59,10 +61,15 @@ export async function writeJsonAtomic(file: string, data: unknown, opts: { mkdir
     }
 }
 
-// Errno codes of a rename that another program blocks for a moment on Windows (an antivirus, an
-// indexer or an editor holds the file open). Linux and macOS do not raise them for a busy file; there
-// they mean a real refusal, and the retry only delays the same error by about one second.
-const RENAME_BUSY = ['EPERM', 'EBUSY', 'EACCES']
+// Errno codes of a file operation that another program blocks for a moment on Windows (an antivirus,
+// an indexer or an editor holds the file open; a name still "delete pending"). Linux and macOS do not
+// raise them for a busy file; there they mean a real refusal.
+const BUSY_CODES = ['EPERM', 'EBUSY', 'EACCES']
+
+// Purpose: tell whether an error is one of the "busy on Windows" codes (the one definition).
+export function isBusyErrno(err: unknown): boolean {
+    return BUSY_CODES.some((c) => hasErrno(err, c))
+}
 // Backoff of renameRetry: 6 tries, about 1 s in total.
 const RENAME_DELAYS_MS = [20, 50, 100, 200, 300, 400]
 
@@ -76,9 +83,9 @@ export async function renameRetry(from: string, to: string): Promise<void> {
             return
         } catch (err) {
             const delay = RENAME_DELAYS_MS[attempt]
-            if (delay === undefined || !RENAME_BUSY.some((c) => hasErrno(err, c))) throw err
+            if (delay === undefined || !isBusyErrno(err)) throw err
             log('warn', 'renameRetry', 'rename blocked; retrying', { from, to, attempt, error: String(err) })
-            await new Promise((r) => setTimeout(r, delay))
+            await sleep(delay)
         }
     }
 }

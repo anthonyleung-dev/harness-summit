@@ -2,7 +2,8 @@
 // with no tool call in between, and the agent reads alive to a second server.
 import { describe, expect, it } from 'vitest'
 
-import { BEAT_MS, beatTime, STALE_MS } from '../../src/core/heartbeat.js'
+import { BEAT_MS, STALE_MS } from '../../src/core/freshness.js'
+import { beatTime } from '../../src/core/heartbeat.js'
 import { tmpDir, until } from '../helpers/env.js'
 import { McpProc } from '../helpers/mcp.js'
 import { ageBeat } from '../helpers/state.js'

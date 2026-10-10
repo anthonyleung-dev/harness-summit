@@ -8,8 +8,8 @@
 import fs from 'node:fs/promises'
 
 import { hasErrno } from './errors.js'
+import { BEAT_MS } from './freshness.js'
 import { readTextFile } from './fsx.js'
-import { BEAT_MS } from './heartbeat.js'
 import { log } from './log.js'
 
 // How often a holder refreshes its lock (the heartbeat period). Five refreshes fit in one LOCK_STALE_MS.
@@ -40,16 +40,12 @@ export async function refreshLease(lockPath: string, token: string, now = new Da
 }
 
 // Purpose: start refreshing the lease of `lockPath` (held with `token`) every `everyMs`, for at most
-// `maxHoldMs`. Returns the stop function. The timer is unref'd, so it never keeps a process alive, and
-// two refreshes never overlap. A lost lease is logged once as an error: the holder kept running past
+// `maxHoldMs` (no defaults: withLock passes LEASE_REFRESH_MS and LOCK_MAX_HOLD_MS explicitly). Returns
+// the stop function. The timer is unref'd, so it never keeps a process alive, and two refreshes never
+// overlap. A lost lease is logged once as an error: the holder kept running past
 // LOCK_STALE_MS without a refresh (an event-loop stall, a suspend, or a hold past LOCK_MAX_HOLD_MS), and a
 // waiter took the lock.
-export function startLease(
-    lockPath: string,
-    token: string,
-    everyMs = LEASE_REFRESH_MS,
-    maxHoldMs = LOCK_MAX_HOLD_MS,
-): () => void {
+export function startLease(lockPath: string, token: string, everyMs: number, maxHoldMs: number): () => void {
     let busy = false
     let reported = false
     const until = Date.now() + maxHoldMs

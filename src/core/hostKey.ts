@@ -24,9 +24,14 @@ export const SESSION_FILE_HARNESSES: readonly Harness[] = ['claude', 'omp']
 
 // Why a signal harness call has no session id, in words a user can act on.
 const NO_SESSION: Record<string, string> = {
-    claude: 'no Claude Code session recorded for this server: the harness-summit plugin hooks did not run (SessionStart writes .sessions/claude-<pid>.json); restart Claude Code with the harness-summit plugin enabled',
+    claude: 'no Claude Code session recorded for this server: the harness-summit plugin hooks did not run (SessionStart writes .sessions/claude-<pid>.json), or a CLAUDE_CODE_SHELL_PREFIX wrapper started them under another parent; run /resume or restart Claude Code with the harness-summit plugin enabled',
     pi: `${PI_SESSION_ENV} is not set: the harness-summit pi extension registers this server; remove any harness-summit entry from ~/.pi/agent/mcp.json and restart pi`,
     omp: 'no OMP session recorded for this server: the harness-summit OMP extension did not run (it writes .sessions/omp-<pid>.json in an interactive session)',
+}
+
+// Purpose: the one host key format: `<harness>-<id>` (the id is validated by the callers).
+export function joinHostKey(harness: string, id: string): string {
+    return `${harness}-${id}`
 }
 
 // Purpose: tell whether the harness is woken by a signal file and keyed by a host-provided session id.
@@ -49,7 +54,7 @@ export function hostKeyForSession(harness: Harness, sessionId: string | undefine
     if (!ID_PATTERN.test(sessionId)) {
         throw summitError('SUMMIT_NO_HOST_KEY', 'unusable session id', 'hostKeyForSession', { harness, sessionId })
     }
-    return `${harness}-${sessionId}`
+    return joinHostKey(harness, sessionId)
 }
 
 // Purpose: read a string field from `_meta`, or undefined.
@@ -91,5 +96,5 @@ export function resolveHostKey(input: { harness: Harness; meta: RequestMeta; ses
     if (!ID_PATTERN.test(id)) {
         throw summitError('SUMMIT_NO_HOST_KEY', `unusable ${expected}`, 'resolveHostKey', { harness, id })
     }
-    return `${harness}-${id}`
+    return joinHostKey(harness, id)
 }

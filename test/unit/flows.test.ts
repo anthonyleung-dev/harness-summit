@@ -36,6 +36,7 @@ describe('flows', () => {
             harness: 'pi',
             pid,
             cwdSource: 'process.cwd',
+            // The one literal pin of the signal layout (SPEC §4); every other test uses signalPathFor.
             wake: { type: 'signal', path: path.join(root, '.wake', 'pi-S-pi.signal') },
         })
         const host = hostJson(root, 'pi-S-pi')!

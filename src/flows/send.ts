@@ -5,7 +5,7 @@ import { agentExists, agentLabel, readAgent, requireAgent } from '../core/agents
 import { summitError } from '../core/errors.js'
 import { log } from '../core/log.js'
 import { appendRecord } from '../core/mailbox.js'
-import { readMembers } from '../core/members.js'
+import { nameKey, readMembers } from '../core/members.js'
 import { agentDir } from '../core/paths.js'
 import { pipe, step } from '../core/pipe.js'
 import { NAME_PATTERN, UUID_PATTERN, type AgentRecord, type MessageRecord } from '../core/schemas.js'
@@ -44,7 +44,8 @@ export async function resolveTarget(root: string, groupKey: string, to: string):
             { to, groupKey },
         )
     }
-    const uuid = NAME_PATTERN.test(ref) ? members.members[ref] : undefined
+    const key = NAME_PATTERN.test(ref) ? nameKey(members, ref) : undefined
+    const uuid = key === undefined ? undefined : members.members[key]
     if (uuid === undefined) {
         log('info', 'resolveTarget', 'unknown name', { to, groupKey })
         throw summitError('SUMMIT_UNKNOWN_TARGET', `no agent named ${ref} in this group`, 'resolveTarget', {

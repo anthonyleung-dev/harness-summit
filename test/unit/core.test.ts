@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 
+import { sleep, STALE_MS } from '../../src/core/freshness.js'
 import {
     codexThreadId,
     hostKeyForSession,
@@ -11,7 +12,7 @@ import {
     SESSION_FILE_HARNESSES,
     SIGNAL_HARNESSES,
 } from '../../src/core/hostKey.js'
-import { breakStaleLock, LOCK_STALE_MS, sleep, withLock } from '../../src/core/lock.js'
+import { breakStaleLock, withLock } from '../../src/core/lock.js'
 import { readMembers, updateMembers } from '../../src/core/members.js'
 import { membersLock } from '../../src/core/paths.js'
 import { defaultGroupKey, namedGroupKey } from '../../src/core/project.js'
@@ -87,7 +88,7 @@ describe('locks', () => {
         const lock = membersLock(root, 'g')
         fs.mkdirSync(path.dirname(lock), { recursive: true })
         fs.writeFileSync(lock, 'old')
-        ageFile(lock, LOCK_STALE_MS + 1000)
+        ageFile(lock, STALE_MS + 1000)
         await updateMembers(root, 'g', (m) => m)
         expect(fs.existsSync(lock)).toBe(false)
     })
@@ -97,7 +98,7 @@ describe('locks', () => {
         const stale = lockLine('stale-token')
         // The waiter read "stale-token" earlier; another waiter broke that lock and took a new one, which
         // its holder has since stopped refreshing too.
-        const fresh = writeLockFile(lock, 'fresh-token', { ageMs: LOCK_STALE_MS + 1_000 })
+        const fresh = writeLockFile(lock, 'fresh-token', { ageMs: STALE_MS + 1_000 })
         expect(await breakStaleLock(lock, stale)).toBe(false)
         expect(fs.readFileSync(lock, 'utf8')).toBe(fresh)
         expect(fs.readdirSync(path.dirname(lock))).toEqual(['x.lock'])
@@ -108,7 +109,7 @@ describe('locks', () => {
 
     it('many waiters on one stale lock: exactly one holder at a time (F10)', async () => {
         const lock = path.join(tmpDir('herd'), 'x.lock')
-        writeLockFile(lock, 'dead-token', { ageMs: LOCK_STALE_MS + 1_000 })
+        writeLockFile(lock, 'dead-token', { ageMs: STALE_MS + 1_000 })
         let holders = 0
         let most = 0
         await Promise.all(

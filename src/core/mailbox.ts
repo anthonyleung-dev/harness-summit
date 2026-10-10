@@ -4,7 +4,7 @@ import fs from 'node:fs/promises'
 import { hasErrno, summitError } from './errors.js'
 import { readJsonFile, writeJsonAtomic } from './fsx.js'
 import { log } from './log.js'
-import { cursorFile, inboxFile } from './paths.js'
+import { cursorFile, FILE_MODE, inboxFile } from './paths.js'
 import { formatRecord, parseRecords } from './records.js'
 import {
     CursorSchema,
@@ -27,7 +27,7 @@ export interface UnreadScan {
 export async function appendRecord(folder: string, senderLabel: string, rec: MessageRecord): Promise<void> {
     const file = inboxFile(folder, senderLabel)
     try {
-        await fs.appendFile(file, formatRecord(rec))
+        await fs.appendFile(file, formatRecord(rec), { mode: FILE_MODE })
     } catch (err) {
         throw summitError('SUMMIT_IO', `cannot append to ${file}`, 'appendRecord', { file, id: rec.id }, err)
     }

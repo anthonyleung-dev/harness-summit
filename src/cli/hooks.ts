@@ -11,6 +11,7 @@ import { hostKeyForSession } from '../core/hostKey.js'
 import { log, logFilePath } from '../core/log.js'
 import { noticeForHostKey } from '../core/notice.js'
 import { signalPathFor } from '../core/paths.js'
+import { normalizeRootPath } from '../core/project.js'
 import type { Harness } from '../core/schemas.js'
 import { readSession, writeSession } from '../core/sessions.js'
 import { ensureSignal } from '../core/signal.js'
@@ -40,12 +41,26 @@ function parseStdin<S extends z.ZodType>(text: string, schema: S, fn: string): z
     }
 }
 
-// Purpose: the claude pid of this hook: $CLAUDE_PID, else the hook's parent pid.
+// Purpose: the claude pid of this hook: its parent pid. Exec-form hooks are spawned by claude directly
+// (no shell), so the parent is claude (verified from Claude Code 2.1.296). `$CLAUDE_PID` is inherited env
+// and can be stale or forged (a claude started from another claude's tool call inherits it), so it only
+// confirms: a value that differs from the parent pid is logged and ignored.
 export function claudePid(env: NodeJS.ProcessEnv, ppid: number): number {
-    const fromEnv = Number(env.CLAUDE_PID)
-    if (Number.isInteger(fromEnv) && fromEnv > 0) return fromEnv
-    log('debug', 'claudePid', 'CLAUDE_PID unset; using the hook parent pid', { ppid })
+    const fromEnv = env.CLAUDE_PID
+    if (fromEnv !== undefined && fromEnv !== '' && Number(fromEnv) !== ppid) {
+        log('warn', 'claudePid', 'CLAUDE_PID differs from the hook parent pid; using the parent pid', {
+            claudePidEnv: fromEnv,
+            ppid,
+        })
+    }
     return ppid
+}
+
+// Purpose: tell whether two paths name the same file, compared through the one path normalizer
+// (normalizeRootPath: one separator and a lower-case drive letter on Windows; Claude reports the
+// changed file with backslashes there).
+function samePath(a: string, b: string): boolean {
+    return normalizeRootPath(path.resolve(a)) === normalizeRootPath(path.resolve(b))
 }
 
 // Purpose: arm the signal file of a session's host key (touch: never truncate) and return its path.
@@ -96,8 +111,8 @@ export async function claudeFileChanged(stdin: string, he: HookEnv): Promise<Hoo
         }
         const hostKey = hostKeyForSession('claude', sessionId)
         const ours = signalPathFor(he.root, hostKey)
-        if (input.file_path === undefined || path.resolve(input.file_path) !== ours || input.event === 'unlink') {
-            log('debug', 'claudeFileChanged', 'not our signal', { file: input.file_path, event: input.event })
+        if (input.file_path === undefined || !samePath(input.file_path, ours) || input.event === 'unlink') {
+            log('warn', 'claudeFileChanged', 'not our signal', { file: input.file_path, ours, event: input.event })
             return { exitCode: 0 }
         }
         const notice = await noticeForHostKey(he.root, hostKey)

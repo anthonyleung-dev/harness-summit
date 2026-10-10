@@ -2,7 +2,8 @@
 // the receiver's read lock, and it stamps its debounce claim before the wake command runs.
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { withLock, sleep } from '../../src/core/lock.js'
+import { sleep } from '../../src/core/freshness.js'
+import { withLock } from '../../src/core/lock.js'
 import { scanUnread, writeCursor } from '../../src/core/mailbox.js'
 import { cursorLock, lastWakeFile } from '../../src/core/paths.js'
 import { join } from '../../src/flows/join.js'

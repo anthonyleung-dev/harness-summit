@@ -6,10 +6,10 @@ import { describe, expect, it } from 'vitest'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 
+import { writeSessionSync } from '../../src/core/sessions.js'
 import { createSummitServer } from '../../src/server/server.js'
 import { fakePid, tmpDir } from '../helpers/env.js'
 import { McpProc } from '../helpers/mcp.js'
-import { writeSessionFile } from '../helpers/state.js'
 
 describe('session identity across server processes', () => {
     it('claude: a new host process that resumes the session gets the same agent', async () => {
@@ -29,7 +29,7 @@ describe('session identity across server processes', () => {
         const root = tmpDir('captured')
         // The host recorded its session under its pid; this test process is not that host.
         const hostPid = fakePid()
-        writeSessionFile(root, 'claude', hostPid, 'S-captured')
+        writeSessionSync(root, 'claude', hostPid, 'S-captured')
         const server = createSummitServer({ harness: 'claude', root, hostPid })
         const [clientSide, serverSide] = InMemoryTransport.createLinkedPair()
         await server.connect(serverSide)

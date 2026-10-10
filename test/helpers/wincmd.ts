@@ -75,7 +75,8 @@ export function msvcrtArgv(line: string): string[] {
 // runs `cmd.exe <cmdArgs>`: strip the `/s` outer quotes, parse once, cut off the batch file path, expand
 // `%*` into the shim's line and parse again, then split by the C runtime rules.
 export function argvThroughShim(cmdArgs: string[]): string[] {
-    const line = cmdArgs[3] ?? ''
+    // The /c line is the last argument (after /d /v:off /s /c).
+    const line = cmdArgs[cmdArgs.length - 1] ?? ''
     if (!line.startsWith('"') || !line.endsWith('"')) throw new Error(`no /s outer quotes: ${line}`)
     const first = cmdPhase(line.slice(1, -1))
     const end = first.indexOf('"', 1)

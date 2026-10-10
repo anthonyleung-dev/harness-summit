@@ -6,7 +6,7 @@ import path from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { updateAgent } from '../../src/core/agents.js'
-import { sleep } from '../../src/core/lock.js'
+import { sleep } from '../../src/core/freshness.js'
 import { lockGroup } from '../../src/core/members.js'
 import { join } from '../../src/flows/join.js'
 import { read } from '../../src/flows/read.js'

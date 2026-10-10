@@ -22,7 +22,7 @@ import { writeHost } from '../core/identity.js'
 import { withLock } from '../core/lock.js'
 import { log } from '../core/log.js'
 import { applyMembersUpdate, lockGroups, updateMembers, withoutUuid } from '../core/members.js'
-import { agentDir, cursorLock, groupDir } from '../core/paths.js'
+import { agentDir, cursorLock, DIR_MODE, groupDir } from '../core/paths.js'
 import { pipe, rollBack, step } from '../core/pipe.js'
 import { namedGroupKey } from '../core/project.js'
 import type { AgentRecord, Takeover } from '../core/schemas.js'
@@ -118,7 +118,7 @@ const moveFolder = step<GroupCtx>(
             throw summitError('SUMMIT_IO', `cannot move ${from}: ${to} already exists`, 'moveFolder', { from, newKey })
         }
         try {
-            await fs.mkdir(groupDir(ctx.call.root, newKey), { recursive: true })
+            await fs.mkdir(groupDir(ctx.call.root, newKey), { recursive: true, mode: DIR_MODE })
             await renameHoldingReadLock(from, to)
         } catch (err) {
             throw summitError('SUMMIT_IO', `cannot move ${from}`, 'moveFolder', { from, newKey }, err)

@@ -6,17 +6,19 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { STALE_MS } from '../../src/core/heartbeat.js'
+import { STALE_MS } from '../../src/core/freshness.js'
 import { readHost } from '../../src/core/identity.js'
 import { readMembers } from '../../src/core/members.js'
 import { noticeForHostKey } from '../../src/core/notice.js'
+import { aliveFile } from '../../src/core/paths.js'
+import { writeSessionSync } from '../../src/core/sessions.js'
 import { join } from '../../src/flows/join.js'
 import { members, whoami } from '../../src/flows/query.js'
 import { read } from '../../src/flows/read.js'
 import { rename } from '../../src/flows/rename.js'
 import { send } from '../../src/flows/send.js'
 import { callFor, errorCode, fakePid, tmpRoot } from '../helpers/env.js'
-import { ageBeat, moveFolder, writeSessionFile } from '../helpers/state.js'
+import { ageBeat, moveFolder } from '../helpers/state.js'
 
 describe('identity follows the harness session', () => {
     let root: string
@@ -47,7 +49,7 @@ describe('identity follows the harness session', () => {
             const before = callFor(root, harness, { hostPid, session: `old-${harness}` })
             const old = await join(before)
             // The SessionStart hook (or the OMP extension) records the new session for the same process.
-            writeSessionFile(root, harness, hostPid, `new-${harness}`)
+            writeSessionSync(root, harness, hostPid, `new-${harness}`)
             expect(await whoami(before)).toEqual({ joined: false, hostKey: `${harness}-new-${harness}` })
             const fresh = await join(before)
             expect(fresh.uuid).not.toBe(old.uuid)
@@ -81,7 +83,7 @@ describe('identity follows the harness session', () => {
         expect(await noticeForHostKey(root, old.hostKey)).not.toBeNull()
     })
 
-    it('members reports alive from the heartbeat of the session key: true, false after 10 s, unknown never beaten', async () => {
+    it('members reports alive from the heartbeat of the session key: true, false when stale or missing', async () => {
         const a = callFor(root, 'claude')
         const b = callFor(root, 'claude')
         await join(a)
@@ -90,8 +92,8 @@ describe('identity follows the harness session', () => {
         expect(await aliveOfB()).toBe(true)
         ageBeat(root, jb.hostKey, STALE_MS + 1_000)
         expect(await aliveOfB()).toBe(false)
-        fs.rmSync(path.join(root, '.alive', `${jb.hostKey}.json`))
-        expect(await aliveOfB()).toBe('unknown')
+        fs.rmSync(aliveFile(root, jb.hostKey))
+        expect(await aliveOfB()).toBe(false)
     })
 })
 

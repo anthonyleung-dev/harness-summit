@@ -13,6 +13,7 @@ import { isSignalHarness, PI_SESSION_ENV, type RequestMeta } from '../core/hostK
 import { configureLog, log } from '../core/log.js'
 import { summitRoot } from '../core/paths.js'
 import { SUMMIT_NAME, type Harness } from '../core/schemas.js'
+import { cleanupSessions } from '../core/sessions.js'
 import { callHostKey, type CallContext } from '../flows/context.js'
 import { TOOLS, type ToolDef } from './tools.js'
 
@@ -31,6 +32,8 @@ export interface ServerOptions {
     hostPid?: number
     // pi: the session id from PI_SESSION_ENV, read once at server start.
     sessionEnv?: string
+    // When the server started (default: now).
+    startedAt?: number
 }
 
 // Purpose: run one tool definition for one request and shape the MCP result. Errors become
@@ -63,6 +66,7 @@ export function createSummitServer(options: ServerOptions): McpServer {
     const root = options.root ?? summitRoot()
     const exec = options.exec ?? defaultExec
     const hostPid = options.hostPid ?? process.ppid
+    const startedAt = options.startedAt ?? Date.now()
     const server = new McpServer({ name: SUMMIT_NAME, version: SERVER_VERSION })
     for (const def of TOOLS as ToolDef<z.ZodObject, z.ZodObject>[]) {
         server.registerTool(
@@ -76,6 +80,7 @@ export function createSummitServer(options: ServerOptions): McpServer {
                     hostPid,
                     pid: process.pid,
                     sessionEnv: options.sessionEnv,
+                    startedAt,
                     exec,
                 }
                 const running = runTool(def, call, args)
@@ -143,6 +148,9 @@ function installExitHandlers(harness: Harness, stopHeartbeat: () => void): void 
 // so `/clear` and `/new` move the beat to the new session; pi's key is fixed by its env). Codex keys are
 // added by the calls themselves (beatCaller); opencode beats nothing.
 export async function startServing(root: string, base: CallContext): Promise<() => void> {
+    await cleanupSessions(root).catch((err: unknown) =>
+        log('warn', 'startServing', 'session file cleanup failed', { error: String(err) }),
+    )
     await cleanupBeats(root).catch((err: unknown) =>
         log('warn', 'startServing', 'heartbeat cleanup failed', { error: String(err) }),
     )
@@ -164,6 +172,7 @@ export async function runMcpServer(harness: Harness): Promise<void> {
     const root = summitRoot()
     const hostPid = process.ppid
     const sessionEnv = harness === 'pi' ? process.env[PI_SESSION_ENV] : undefined
+    const startedAt = Date.now()
     const base: CallContext = {
         root,
         harness,
@@ -172,9 +181,10 @@ export async function runMcpServer(harness: Harness): Promise<void> {
         pid: process.pid,
         sessionEnv,
         exec: defaultExec,
+        startedAt,
     }
     installExitHandlers(harness, await startServing(root, base))
-    const server = createSummitServer({ harness, root, hostPid, sessionEnv })
+    const server = createSummitServer({ harness, root, hostPid, sessionEnv, startedAt })
     await server.connect(new StdioServerTransport())
     log('info', 'mcp', 'server started', { harness, pid: process.pid, hostPid, sessionEnv, cwd: process.cwd(), root })
 }

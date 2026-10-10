@@ -14,7 +14,14 @@
 import { agentExists, isAlive, readAgent, requireAgent, updateAgent } from '../core/agents.js'
 import { summitError } from '../core/errors.js'
 import { log } from '../core/log.js'
-import { applyMembersUpdate, updateMembers, withoutUuid, type MembersUpdate } from '../core/members.js'
+import {
+    applyMembersUpdate,
+    nameKey,
+    updateMembers,
+    withName,
+    withoutUuid,
+    type MembersUpdate,
+} from '../core/members.js'
 import { pipe, step } from '../core/pipe.js'
 import { NameSchema, type AgentRecord, type Members, type Takeover, type TakeoverReason } from '../core/schemas.js'
 import { hostKeyStep, need, requireHostStep, type CallContext, type WithHost } from './context.js'
@@ -64,7 +71,8 @@ export function validateName(name: string): string {
 // Purpose: the current holder of `name` when it is another agent whose folder is in this group.
 // Null when free (no entry, our own entry, or a leftover entry without a folder here, F6).
 async function nameHolder(root: string, groupKey: string, m: Members, name: string, uuid: string) {
-    const owner = m.members[name]
+    const key = nameKey(m, name)
+    const owner = key === undefined ? undefined : m.members[key]
     if (owner === undefined || owner === uuid) return null
     const agent = await readAgent(root, groupKey, owner)
     return agent === null ? null : { agent, groupKey }
@@ -133,9 +141,7 @@ export function claimName(
             )
             opts.onTakeover?.({ holder: holder.agent, reason: holder.reason })
         }
-        const next = withoutUuid(await withoutLeftovers(root, groupKey, m), uuid)
-        next.members[name] = uuid
-        return next
+        return withName(withoutUuid(await withoutLeftovers(root, groupKey, m), uuid), name, uuid)
     }
 }
 
@@ -151,8 +157,7 @@ export async function restoreHolder(
 ): Promise<void> {
     await applyMembersUpdate(root, groupKey, (m) => {
         const next = withoutUuid(m, uuid)
-        if (taken !== undefined) next.members[name] = taken.holder.uuid
-        return next
+        return taken === undefined ? next : withName(next, taken.holder.name ?? name, taken.holder.uuid)
     })
     if (taken === undefined || taken.holder.name === null) return
     const { holder } = taken

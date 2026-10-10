@@ -7,11 +7,11 @@ import os from 'node:os'
 import path from 'node:path'
 
 import type { CaptureResult, Exec, ExecRequest } from '../../src/core/exec.js'
+import { sleep } from '../../src/core/freshness.js'
 import { usesSessionFile, type RequestMeta } from '../../src/core/hostKey.js'
-import { sleep } from '../../src/core/lock.js'
 import type { Harness } from '../../src/core/schemas.js'
+import { writeSessionSync } from '../../src/core/sessions.js'
 import type { CallContext } from '../../src/flows/context.js'
-import { writeSessionFile } from './state.js'
 
 export const REPO = path.resolve(import.meta.dirname, '..', '..')
 export const CLI = path.join(REPO, 'dist', 'cli.js')
@@ -107,7 +107,7 @@ export interface CallerOptions {
 export function callFor(root: string, harness: Harness, opts: CallerOptions = {}): CallContext {
     const hostPid = opts.hostPid ?? fakePid()
     const session = opts.session ?? randomUUID()
-    if (usesSessionFile(harness)) writeSessionFile(root, harness, hostPid, session)
+    if (usesSessionFile(harness)) writeSessionSync(root, harness, hostPid, session)
     return {
         root,
         harness,
@@ -115,6 +115,8 @@ export function callFor(root: string, harness: Harness, opts: CallerOptions = {}
         hostPid,
         pid: process.pid,
         sessionEnv: harness === 'pi' ? session : undefined,
+        // The simulated server started just now (its host's session file was written just before).
+        startedAt: Date.now(),
         exec: opts.exec ?? recordingExec(),
     }
 }

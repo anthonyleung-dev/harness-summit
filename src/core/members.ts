@@ -67,6 +67,21 @@ export function withoutUuid(m: Members, uuid: string): Members {
     return { version: 1, members: Object.fromEntries(Object.entries(m.members).filter(([, u]) => u !== uuid)) }
 }
 
+// Purpose: the map key that equals `name` ignoring letter case, or undefined. Names are unique ignoring
+// case (`Alice` and `alice` cannot both exist), because each name is an inbox file name and macOS and
+// Windows file systems ignore case by default. The one comparison: claims and lookups use it.
+export function nameKey(m: Members, name: string): string | undefined {
+    const wanted = name.toLowerCase()
+    return Object.keys(m.members).find((k) => k.toLowerCase() === wanted)
+}
+
+// Purpose: map `name` to `uuid`, replacing any entry whose key equals `name` ignoring case.
+export function withName(m: Members, name: string, uuid: string): Members {
+    const key = nameKey(m, name)
+    const members = Object.fromEntries(Object.entries(m.members).filter(([k]) => k !== key))
+    return { version: 1, members: { ...members, [name]: uuid } }
+}
+
 // Purpose: find the name of `uuid` in the map, or null.
 export function nameOf(m: Members, uuid: string): string | null {
     return Object.entries(m.members).find(([, u]) => u === uuid)?.[0] ?? null

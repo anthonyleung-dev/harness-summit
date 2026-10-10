@@ -4,6 +4,11 @@
 import os from 'node:os'
 import path from 'node:path'
 
+// Modes of what harness-summit creates under the summit root (SPEC §4): only the owner reads mail,
+// identities and locks. Applied where the OS supports modes; Windows keeps only the write bit.
+export const DIR_MODE = 0o700
+export const FILE_MODE = 0o600
+
 // Purpose: resolve the summit root: $HARNESS_SUMMIT_HOME, else ~/.harness-summit.
 export function summitRoot(env: NodeJS.ProcessEnv = process.env): string {
     const fromEnv = env.HARNESS_SUMMIT_HOME

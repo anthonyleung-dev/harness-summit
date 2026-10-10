@@ -6,8 +6,8 @@ import readline from 'node:readline'
 
 import { PI_SESSION_ENV, usesSessionFile } from '../../src/core/hostKey.js'
 import type { Harness } from '../../src/core/schemas.js'
+import { writeSessionSync } from '../../src/core/sessions.js'
 import { cliCommand } from './env.js'
-import { writeSessionFile } from './state.js'
 
 type Pending = { resolve: (v: any) => void }
 
@@ -62,7 +62,7 @@ export class McpProc {
         const child = spawn(cmd, argv, { env })
         // The server's parent: the Node parent with viaParent, else this test process.
         const hostPid = opts.viaParent ? (child.pid as number) : process.pid
-        if (usesSessionFile(opts.harness)) writeSessionFile(opts.root, opts.harness, hostPid, session)
+        if (usesSessionFile(opts.harness)) writeSessionSync(opts.root, opts.harness, hostPid, session)
         const proc = new McpProc(child)
         proc.session = session
         return proc
