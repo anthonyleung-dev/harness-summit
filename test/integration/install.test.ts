@@ -167,9 +167,16 @@ describe('install CLI (--home, dry run, exec recorded)', () => {
         expect(snapshot(home)).toEqual(original)
 
         expect((await runCli(['install', '--harness', 'codex,opencode', '--home', home], { env })).code).toBe(0)
-        const recorded = fs.readFileSync(execLog, 'utf8')
-        expect(recorded).toContain('"cmd":"opencode","args":["mcp","add","--global",')
-        expect(recorded).toContain('"harness-summit","--","' + process.execPath + '"')
+        // The exec log is JSON lines: compare parsed args, so a Windows path keeps its single backslashes.
+        const recorded = fs
+            .readFileSync(execLog, 'utf8')
+            .trim()
+            .split('\n')
+            .map((l) => JSON.parse(l) as { cmd: string; args: string[] })
+        const add = recorded.find((r) => r.cmd === 'opencode' && r.args[0] === 'mcp')!
+        expect(add.args.slice(0, 3)).toEqual(['mcp', 'add', '--global'])
+        const at = add.args.indexOf('harness-summit')
+        expect(add.args.slice(at, at + 3)).toEqual(['harness-summit', '--', process.execPath])
         const doctor = await runCli(['doctor', '--home', home], { env })
         expect(doctor.stdout).toMatch(/codex\s+registered=yes commands=10\/10/)
         expect((await runCli(['uninstall', '--harness', 'codex,opencode', '--home', home], { env })).code).toBe(0)

@@ -1,5 +1,6 @@
 // Unit tests for the DTOs at the edges: the OpenCode session.get answer (DEMO D3, REVIEW m12), the
 // whoami output union (REVIEW m15) and the CLI argument DTO (REVIEW m16).
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { logsToFile, parseCliArgs, parseHarnessList } from '../../src/cli/args.js'
@@ -53,7 +54,8 @@ describe('CLI arguments', () => {
             cmd: 'install',
             harness: 'pi,omp',
             dryRun: true,
-            home: '/h',
+            // `--home` is resolved: `/h` on POSIX, `<drive>:\\h` on Windows.
+            home: path.resolve('/h'),
         })
         expect(() => parseCliArgs(['--nope'])).toThrow(expect.objectContaining({ code: 'SUMMIT_BAD_INPUT' }))
         expect(() => parseHarnessList('pi,vim')).toThrow(expect.objectContaining({ code: 'SUMMIT_BAD_INPUT' }))

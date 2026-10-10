@@ -10,9 +10,17 @@ import { McpProc } from '../helpers/mcp.js'
 
 const POSIX = process.platform !== 'win32'
 
+// Why a case does not run on Windows (written reason per case; every skipped case has one):
+// - SIGHUP: Windows has no SIGHUP, and the server does not listen for it there (exitSignals).
+// - SIGTERM: on Windows `child.kill('SIGTERM')` terminates the child at once (TerminateProcess), with no
+//   handler, so there is nothing to drain; the hard kill is covered by the Windows-only case below.
+// The stdin-end cases run on every OS: that is the path a harness uses to stop a server on Windows (the
+// MCP SDK client ends stdin first and kills 2 s later).
+const runsHere = (how: 'SIGTERM' | 'SIGHUP' | 'stdin end') => POSIX || how === 'stdin end'
+
 describe('server exit', () => {
     for (const how of ['SIGTERM', 'SIGHUP', 'stdin end'] as const) {
-        it.runIf(POSIX || how === 'stdin end')(`exits 0 on ${how} and keeps the agent folder`, async () => {
+        it.runIf(runsHere(how))(`exits 0 on ${how} and keeps the agent folder`, async () => {
             const root = tmpDir('exit')
             const p = McpProc.start({ harness: 'claude', root })
             await p.initialize()
@@ -24,11 +32,22 @@ describe('server exit', () => {
             expect(p.stderr).toContain(`"why":"${how}"`)
         })
     }
+
+    it.runIf(!POSIX)('Windows: SIGTERM is a hard kill; nothing drains, and the agent folder stays', async () => {
+        const root = tmpDir('hardkill')
+        const p = McpProc.start({ harness: 'claude', root })
+        await p.initialize()
+        const j = await p.call('summit_join')
+        p.child.kill('SIGTERM')
+        await p.exited
+        expect(p.stderr).not.toContain('"msg":"exiting"')
+        expect(fs.existsSync(j.folder)).toBe(true)
+    })
 })
 
 describe('shutdown during a tool call (REVIEW m7)', () => {
     for (const how of ['SIGTERM', 'stdin end'] as const) {
-        it.runIf(POSIX || how === 'stdin end')(`answers the running call before it exits on ${how}`, async () => {
+        it.runIf(runsHere(how))(`answers the running call before it exits on ${how}`, async () => {
             const root = tmpDir('drain')
             // A fake `codex` that takes 1 s to exit: the send's wake waits for it.
             const bin = fakeBin(root, 'slow-codex', 'setTimeout(() => process.exit(0), 1000)')
