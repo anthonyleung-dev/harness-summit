@@ -36,16 +36,14 @@ versions may work; the hook and extension APIs these paths use are young and cha
 
 ## Requirements
 
-- Linux, macOS or Windows. Nothing reads OS process tables: liveness and locks use plain files.
 - Node.js 22 or later.
+- Any subset of the five harnesses above. `install` sets up only the ones you name.
 
 Verified live: Linux only (every wake path above, with real sessions). macOS and Windows are verified
 by CI only (build, typecheck and the full test suite on `macos-latest` and `windows-latest`, Node 22
 and 24); no harness session has run on them yet. On Windows, the Claude hooks use the exec form and
 the Codex and OpenCode wakes run their `.cmd` shims through `cmd.exe`; both follow the docs and the
 tests, not a live run.
-
-- Any subset of the five harnesses above. `install` sets up only the ones you name.
 
 ## Quick start
 
@@ -181,34 +179,6 @@ sequenceDiagram
 
 The group key is the md5 of the project root (the git top level, else the working directory, as its
 real path; on Windows with a lower-case drive letter), or the group name after `/sg`. Set `HARNESS_SUMMIT_HOME` to use another root.
-
-## Limits
-
-- One machine only. There is no encryption and no delivery receipt beyond the reply convention.
-- Each Codex or OpenCode wake costs one model turn.
-- An OpenCode wake to a session with no TUI attached runs a turn nobody sees. OpenCode liveness is
-  always `unknown`, so taking an OpenCode agent's name needs `--force`.
-- After `/new` in Codex, the old thread still counts as alive until the Codex TUI exits.
-- `alive` means "an MCP server touched this session's heartbeat file in the last 10 s". Taking the
-  name of an agent that is not alive needs `--force`, because its session may be resumed.
-- After an upgrade, restart running sessions. Agents joined by an older version (keyed by process id)
-  are not found again; each session joins anew. pi needs the new extension: install removes the old
-  `~/.pi/agent/mcp.json` entry, because one of the same name would hide the extension's server.
-- OMP records its session only in an interactive session; `omp` without a UI cannot use the tools.
-- Claude Code finds its session through the plugin's hooks (SessionStart, and a refresh on every prompt
-  and wake). If you start hooks through a `CLAUDE_CODE_SHELL_PREFIX` wrapper, the tools answer
-  `SUMMIT_NO_HOST_KEY`. After reconnecting the MCP server by hand (`/mcp`), they work again from your
-  next prompt.
-- Names ignore letter case (`Alice` and `alice` are one name), and Windows device names (`con`, `nul`,
-  `com1`, ...) are refused as names and group names on every OS.
-- On Windows, a session's own server is stopped without a drain when the harness kills it (Windows
-  has no catchable SIGTERM for a child); harnesses that close stdin first get a clean exit.
-- Nobody deletes the folders of agents that are gone. Their names can be taken over by the next
-  `/sj`, `/sr` or `/sg`.
-- The Claude Code wake uses the documented `FileChanged` + `asyncRewake` hooks. Without the plugin
-  hooks, mail still arrives but the session is not woken.
-- Locks are leases refreshed every 2 s, for at most 60 s. Edge cases (a holder whose event loop stalls for over 12 s, a
-  crash inside a lock break) are described in [SPEC.md](SPEC.md) §5.
 
 ## Development
 
