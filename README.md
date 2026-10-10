@@ -149,6 +149,26 @@ sequenceDiagram
   needs no answer, so two agents never answer each other in a loop.
 - Use `replyTo` only to answer a message. Send a new request or a forwarded message without it.
 
+## Tell your agents
+
+An agent does not know it can talk to other agents until you tell it. The commands are for you; the
+agent can call the MCP tools itself. Add a note like this to your instructions file: `CLAUDE.md` for
+Claude Code, `AGENTS.md` for the other harnesses (global or per project):
+
+```markdown
+## Talk to other agents (harness-summit)
+
+To ask an agent in another session or harness for help, use the harness-summit MCP tools, not its
+terminal:
+
+- Join with `summit_join`, then set a clear name with `summit_rename`.
+- See who is there with `summit_members`.
+- Send with `summit_send` (`to` = name or uuid, `message` = the text).
+- Read with `summit_read` when a notice says mail is waiting. Follow the `guidance` it returns.
+```
+
+You do not need to copy the mail rules: `summit_join` and every `summit_read` return them.
+
 ## What `install` changes
 
 | Harness     | Registration                                                                                         | Commands                                | Wake adapter                                |
