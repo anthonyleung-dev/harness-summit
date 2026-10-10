@@ -7,6 +7,9 @@ development notes, which stay outside this repository (see `.gitignore`).
 ## Stack
 
 - TypeScript (ESM, `module: nodenext`). Node 22 or later. The build runs on Node 23.11.0.
+- Linux, macOS and Windows. Never inspect OS processes: no `/proc`, `ps`, PowerShell, wmic or native
+  FFI. Liveness is the heartbeat file, locks are leases, both by file mtime. CI runs all three OSes
+  (`.github/workflows/ci.yml`); live runs happened on Linux only.
 - `@modelcontextprotocol/sdk` 1.32.1. Use `registerTool`, because `tool()` is deprecated. The stdio
   import is `@modelcontextprotocol/sdk/server/stdio.js`.
 - `zod` 4.6.5 validates every tool input and output, every file read and the CLI arguments.
@@ -42,27 +45,31 @@ npm run dev -- <args>   # run the CLI from source with tsx
       `SUMMIT_NO_HOST_KEY`.
 - Identity is read from `<root>/.hosts/<hostKey>.json` on every call and never cached. One OpenCode
   process serves many sessions, an OMP process survives `/new`, and Codex keeps old thread
-  processes alive. Every read also drops a stale pid-keyed record (`hostStart` differs from
-  `/proc/<pid>/stat` field 22, or the pid is gone) and repairs a record whose folder sits in another
-  group (`src/core/identity.ts`). Only ESRCH, ENOENT while `/proc/self/stat` is readable, and a
-  zombie or dead state (`Z`, `X`, `x`) mean "gone"; any other `/proc` error is "unknown" and never deletes anything
-  (`src/core/proc.ts`, the one "same process" predicate).
-- Every tool call refreshes `agent.json.pid` under the group lock (a resumed Codex thread runs under a
-  new server pid). Until that first call, a Codex agent whose server pid is gone reads
-  `alive: "unknown"`, never `false`. Every write of an existing `agent.json` goes through
+  processes alive. A read repairs a record whose folder sits in another group
+  (`src/core/identity.ts`). A stale pid-keyed record (dead session, reused pid) is dropped once, when
+  a new pid-keyed server starts and before it connects (`dropStaleHost`): no heartbeat for 15 s =
+  stale. Not on read (a read-time age check would drop a live record after a suspend).
+- Liveness (`src/core/heartbeat.ts`): every server touches `<group>/<uuid>/.heartbeat` (mtime) every
+  5 s for the agents it serves (its `<harness>-<ppid>` key; for Codex every thread seen in a call),
+  and on every tool call and join (`beatCaller` in `src/flows/context.ts`). `alive` = beat at most 15 s
+  old, else `false`; OpenCode is always `"unknown"`. `agent.json.pid` is informational (kept because
+  older servers require the field). Every write of an existing `agent.json` goes through
   `updateAgent` (`src/core/agents.ts`). `summit_group` holds the new group's `members.lock` from the
   name claim until the folder has moved, so a map entry whose uuid has no folder in that group is
   always a leftover: it is free and every claim drops it. The same hold covers the old group's lock
   (`lockGroups`, sorted key order), and the move re-reads `agent.json` under it, so a parallel
   rename never leaves `agent.json` and the new map with different names. Undoing a claim (failed move,
   or a rename whose folder left) goes through `restoreHolder` in `src/flows/rename.ts`.
-- A lock is stale when its owner process is gone (owner line `<token> <pid> <start|-> <time>`); a live
-  owner keeps it however old. Age (10 s) decides only when the owner cannot be identified: no owner
-  line, liveness unknown, or no start time while the pid runs. Breakers are serialized by
-  `<lock>.break` (`src/core/lock.ts`, SPEC §5).
+- A lock is a lease (owner line `<token> <ISO time>`): `withLock` refreshes the lock's mtime every 2 s
+  while it holds it (`src/core/lease.ts`); stale = not refreshed for 10 s, or a token this process
+  abandoned. Breakers are serialized by `<lock>.break` (`src/core/lock.ts`, SPEC §5). Renames go through
+  `renameRetry` (`src/core/fsx.ts`), which retries EPERM/EBUSY/EACCES (Windows) and never reports a
+  failed rename as done.
 - Claude Code sends `server/discover` before `initialize`. The SDK answers -32601 and goes on (an
   integration test covers this).
 - Claude hooks:
+    - Exec form in hooks.json (`command` = node, `args` = [cli, "hook", sub]): no shell on any OS, so
+      the hook's ppid is claude. Follows the Claude Code docs; not yet run live on any OS.
     - The signal is keyed by the claude pid. The hook takes `$CLAUDE_PID`, else its ppid.
     - FileChanged has no matcher. It sets `asyncRewake: true` and `timeout: 20`. It exits 0 when
       nothing is unread, else it prints the notice on stderr and exits 2.
@@ -102,12 +109,16 @@ these has exactly one implementation:
 | Signal protocol     | `src/core/signal.ts`, with the path in `src/core/paths.ts`      |
 | Host-key resolution | `src/core/hostKey.ts`                                           |
 | Wake argv           | `src/core/wake.ts`                                              |
-| External CLI spawns | `src/core/exec.ts` (also `cliBin`, `findOnPath`)                |
+| External CLI spawns | `src/core/exec.ts` (`spawnPlan`, `cliBin`, `findOnPath`)        |
+| cmd.exe quoting     | `src/core/winCmd.ts`                                            |
 | Lock files          | `src/core/lock.ts` (`withLock`, `sleep`, `formatLockOwner`)     |
+| Lock lease refresh  | `src/core/lease.ts`                                             |
+| Rename (retrying)   | `renameRetry` in `src/core/fsx.ts`                              |
 | agent.json update   | `updateAgent` in `src/core/agents.ts`                           |
 | Group lock          | `lockGroup` (`lockGroups` for several) in `src/core/members.ts` |
 | Claim undo          | `restoreHolder` in `src/flows/rename.ts`                        |
-| Process liveness    | `src/core/proc.ts` (`isProcessAlive`, `isSameProcess`)          |
+| Agent liveness      | `src/core/heartbeat.ts`, `isAlive` in `src/core/agents.ts`      |
+| Project root key    | `normalizeRootPath` in `src/core/project.ts`                    |
 | Pid-keyed harnesses | `PID_KEYED_HARNESSES` in `src/core/hostKey.ts`                  |
 | File read/write     | `src/core/fsx.ts` (`readTextFile`, `pathExists`, JSON)          |
 | CLI arguments       | `src/cli/args.ts`                                               |
@@ -118,7 +129,14 @@ these has exactly one implementation:
 
 The pi/OMP extension is a separate door, and this is the written reason: the installed copy lives
 alone in the harness's extension dir. So it gets the host key, the signal path and the notice from
-the CLI, and it checks the CLI output by hand (`parseArmed`), because it cannot import Zod there.
+the CLI, and it checks the CLI output by hand (`parseArmed`), because it cannot import Zod there. It
+has no copy of the spawn door either: it starts only the node `.exe` with the CLI, and every other
+command runs inside the CLI through `src/core/exec.ts`.
+
+Test helpers are portable: no `sleep`, `true`, `sh` or procfs. Host pids of in-process callers come
+from `fakePid()`; a dead host is `ageHeartbeat(folder, ms)`; a distinct ppid for a real CLI or server
+comes from the Node parent of `cliCommand(..., viaParent)`; a fake CLI is `fakeBin` (a `.cmd` shim on
+Windows). Signal tests skip on Windows (a signal there terminates at once).
 
 ## Never install into the real home in tests
 

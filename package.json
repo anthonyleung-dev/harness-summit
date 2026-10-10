@@ -27,9 +27,6 @@
     "bugs": {
         "url": "https://github.com/anthonyleung-dev/harness-summit/issues"
     },
-    "os": [
-        "linux"
-    ],
     "type": "module",
     "private": true,
     "bin": {

@@ -16,6 +16,11 @@ Codex CLI 0.162.1, pi 1.0.4, OMP 18.8.7, OpenCode 2.0.24.
 Delivery is a file append. Waking an idle receiver is done by the SENDER, through a per-harness wake
 action recorded in the receiver's `agent.json` (section 6).
 
+Platforms: Linux, macOS and Windows, Node 22 or later. No rule inspects OS processes (no `/proc`, no
+`ps`, no PowerShell, no native calls): agent liveness is a heartbeat file (section 7), locks are
+leases (section 5), and both use only file mtimes. The live probes ran on Linux; macOS and Windows are
+covered by the CI matrix (`.github/workflows/ci.yml`) only.
+
 ## 2. Commands (user-facing)
 
 | Command | Alias | MCP tool | Effect |
@@ -70,29 +75,33 @@ Rules:
   anyway (probes/claude.md K1).
 - Codex and OpenCode send no id on `initialize` or `tools/list`; the host key is known only inside
   a `tools/call`. A call without the expected `_meta` key fails with `SUMMIT_NO_HOST_KEY`.
-- Identity file: `<root>/.hosts/<hostKey>.json` = `{ uuid, groupKey, harness, hostKey, joinedAt, hostStart }`.
-  `summit_join` creates it; `summit_group` updates `groupKey`; `summit_bye` deletes it.
-- Stale record: for pid-keyed hosts (Claude Code, pi, OMP) `hostStart` is the host process start time
-  (`/proc/<pid>/stat` field 22; null where `/proc` is missing, and null for Codex and OpenCode). When
-  the pid now names a process with another start time (pid reuse) or no process, the record belongs
-  to a dead session: every read deletes it and the caller counts as not joined. Only a definite
-  answer counts: "no process" means the `/proc` read failed with ESRCH, or with ENOENT while
-  `/proc/self/stat` is readable, or the process is a zombie (state `Z`: exited, not reaped yet). Any
-  other `/proc` error (EACCES, EMFILE, no `/proc` for the reader, ...) means "unknown", and the record
-  stays. A record without `hostStart`
-  (written before this rule) is accepted.
+- Identity file: `<root>/.hosts/<hostKey>.json` = `{ uuid, groupKey, harness, hostKey, joinedAt }`.
+  `summit_join` creates it; `summit_group` updates `groupKey`; `summit_bye` deletes it. Records written
+  before the heartbeat may still hold `hostStart`; it is ignored and dropped on the next write.
+- Stale record (no OS process inspection, every OS): a pid-keyed record (Claude Code, pi, OMP) must
+  not pass to a new host process that got the same pid. A new MCP server for a pid-keyed harness checks
+  the record of its own host key `<harness>-<process.ppid>` once, when it starts, before it connects its
+  transport (`dropStaleHost`, `src/core/identity.ts`): when the agent's heartbeat (section 7) is older
+  than 15 s or missing, no server has served that agent for 15 s, the record belongs to a dead session,
+  and it is deleted (the caller counts as not joined). A fresher heartbeat means the host's previous
+  server just stopped (pi restarts its MCP child on `/new`), and the record stays. From then on the
+  server beats the record's agent itself, so the check is not repeated on read: in that server it would
+  always pass, and in any other reader (a hook, the extension) an age check would wrongly drop a live
+  record whose server has not beaten yet after a suspend. Codex and OpenCode keys hold no pid and are
+  never dropped this way. Known limit: a pid reused within 15 s of the old server's last beat inherits
+  the record (with its name and unread mail).
 - Unfinished group move: when the record's group holds no folder for the uuid but another group does
   (the move stopped after the folder moved), every read points the record at that group and drops the
   uuid from the old group's map. When no group holds the folder, the caller counts as not joined.
 - `summit_join` on a host key that already has an identity returns the existing identity (idempotent)
   and refreshes `agent.json`. It writes `agent.json` under the group's `members.lock` and keeps the
   name that file holds at that moment, so a name takeover is never undone.
-- Every other tool call refreshes `agent.json.pid` (and `pidStart`) to the pid that serves the caller
-  now, under the group's `members.lock`, when it changed. This matters for Codex: a resumed thread or a
-  restarted MCP server keeps the identity (same thread id) but runs under a new server pid. Until the
-  agent's first tool call after that, its recorded server pid is gone, and it reads `alive: "unknown"`
-  (never `false`: the thread may have been resumed), so its name is taken over only with `force`.
-- Every write of an `agent.json` that already exists (join, pid refresh, rename, name takeover, the
+- Every tool call of a joined agent (and `summit_join` itself) beats its heartbeat and registers its host
+  key with the serving server's heartbeat timer (section 7). This matters for Codex: a resumed thread or a
+  restarted MCP server keeps the identity (same thread id) but runs in a new server, which serves the
+  agent from its first call on. Until that call, nobody beats the agent, and after 15 s it reads
+  `alive: false` (a closed thread is gone; its name can be taken over without `force`).
+- Every write of an `agent.json` that already exists (join, rename, name takeover, the
   restore after a failed move) is one read-modify-write under the group's `members.lock`
   (`updateAgent`), so no writer writes back a field another writer changed meanwhile.
 - Every tool except `summit_join` and `summit_whoami` fails with `SUMMIT_NOT_JOINED` when the host key
@@ -109,10 +118,11 @@ temp dir and never touch the real root.
   .wake/<harness>-<pid>.signal # wake signal for claude/pi/omp hosts (section 6)
   <groupKey>/
     members.json               # { "version": 1, "members": { "<name>": "<uuid>" } }
-    members.lock               # exclusive lock while members.json is rewritten (owner line, section 5)
+    members.lock               # exclusive lock while members.json is rewritten (owner line, lease, section 5)
     members.lock.break         # held for a few file operations while a waiter breaks a stale lock
     <uuid>/
-      agent.json               # { uuid, name|null, harness, hostKey, cwd, cwdSource, projectRoot, pid, pidStart, joinedAt, wake }
+      agent.json               # { uuid, name|null, harness, hostKey, cwd, cwdSource, projectRoot, pid, joinedAt, wake }
+      .heartbeat               # liveness: its mtime is the last beat of the serving MCP server (section 7)
       <sender>.md              # messages FROM <sender> TO this agent; only <sender> appends to it
       .cursor.json             # { "<file>.md": <byte offset read so far> }; only the owner writes it
       .cursor.lock             # lock held by summit_read while it scans and moves the cursor
@@ -121,7 +131,9 @@ temp dir and never touch the real root.
 ```
 
 - Default group key: md5 hex of the project root. Project root = `git rev-parse --show-toplevel` of
-  the session cwd when inside a git work tree, else the realpath of the cwd. The cwd is the MCP
+  the session cwd when inside a git work tree, else the cwd; either way its realpath as the OS reports it
+  (`fs.realpathSync.native`), and on Windows with one separator (`\`) and a lower-case drive letter, so
+  `C:\demo` and `c:/demo` give one group (`normalizeRootPath`, `src/core/project.ts`). The cwd is the MCP
   server's `process.cwd()` for Claude Code, pi and OMP. For Codex and OpenCode the server cwd is not
   the session cwd for sure: use the cwd from `_meta["x-codex-turn-metadata"].workspaces` keys (Codex)
   or the OpenCode session's directory (`opencode api session.get --param sessionID=<id>`, field
@@ -146,8 +158,9 @@ temp dir and never touch the real root.
   file in the folder is never parsed.
 - `<sender>` in a file name is the sender's display name if it has one, else its uuid.
 - `agent.json.pid`: the host pid for Claude Code, pi and OMP; the MCP server's own `process.pid` for
-  Codex; `null` for OpenCode (its child outlives every TUI, so a pid proves nothing). `pidStart` is
-  the start time of that pid (as `hostStart` above), so liveness survives pid reuse.
+  Codex; `null` for OpenCode, as of the last `summit_join`. It is informational only: liveness comes
+  from `.heartbeat` (section 7). The field stays because servers before the heartbeat require it. Records
+  written before the heartbeat may hold `pidStart`; it is ignored and dropped on the next write.
 
 ## 5. Messages
 
@@ -193,45 +206,49 @@ replyTo: <message id>      # only on replies
   scan skips the bytes up to the next valid record, moves the cursor past them, logs them, and returns
   them once in `summit_read`'s `corrupt: [{ file, offset, length, reason }]`.
 - `members.json` writes hold `members.lock` (O_EXCL create, retry with backoff, 15 s timeout). The
-  lock file holds one owner line: `<token> <pid> <start|-> <ISO time>` (a random token, the holder's
-  pid and that pid's start time). A holder releases only its own token. A server keeps its own start
-  time once it has read it; a failed read is not kept, so the next lock reads it again (`-` means "this
-  read failed", never "failed once, at start").
-- A lock is stale when its owner process is gone: the pid is dead, a zombie or now has another start
-  time (the liveness probe of section 7), or the owner is the reading process itself and no longer
-  holds that token (its release failed). A live owner keeps its lock however old it is, so a holder
-  may wait as long as it needs (a group move holds the old and the new group's `members.lock` while it
-  waits for a `.cursor.lock`; a call that needs either lock meanwhile waits, up to its 15 s timeout).
-  When the owner cannot be identified, the lock is stale 10 s after it was written: a lock file
-  without a readable owner line (a holder died between the create and the write), an owner whose
-  liveness is unknown (the probe failed, or the reader has no `/proc`), and an owner line without a
-  start time (`-`, or the round-2 line `<token> <pid> <ISO time>`) whose pid runs, because that pid
-  may now name another process. Such a lock whose pid is gone breaks at once.
+  lock file holds one owner line: `<token> <ISO time>` (a random token and the time the lock was
+  taken). A holder releases only its own token. Owner lines of older servers (`<token> <pid> <ISO
+  time>` and `<token> <pid> <start|-> <ISO time>`) still parse; only their token is used.
+- A lock is a lease (no OS process inspection, every OS): while it holds the lock, the holder sets the
+  lock file's mtime to now every 2 s (`src/core/lease.ts`), for as long as it holds it. A lock is stale
+  when its mtime is older than 10 s (its holder died or hangs and stopped refreshing), or when it holds
+  a token that the reading process itself abandoned (its release failed). So a live holder keeps its
+  lock however long it holds it (a group move holds the old and the new group's `members.lock` while it
+  waits for a `.cursor.lock`; a call that needs either lock meanwhile waits, up to its 15 s timeout). A
+  lock file without a readable owner line (a holder died between the create and the write) and a lock
+  left by an older server (which does not refresh) go stale by the same age rule. A refresh first
+  re-reads the token, so a holder never refreshes a lock that another waiter took after a break.
 - Breakers are serialized by `<lock>.break`, an O_EXCL lock of the same format that is held only for
-  a few file operations; it is stale when its owner is gone or it is older than 10 s. Under it, the
+  a few file operations and is not refreshed; it is stale when it is older than 10 s. Under it, the
   waiter re-reads the lock, checks that it still holds the stale content it saw and is still stale,
   renames it to a unique tomb and removes the tomb. A tomb that holds anything else is linked back
   (this cannot happen while the break lock holds). So a waiter never moves a lock that another waiter
   took after an earlier break. The same rules hold for `.cursor.lock`. A group move releases the
   moved `.cursor.lock` at its new path and first removes a `.cursor.lock.break` or tomb that moved
   with the folder (it belongs to a breaker at the old path, which cannot release it).
-- Known limits of the lock: a live process that hangs inside a critical section, or that cannot
-  remove its lock on release, blocks other processes until it exits (its own next acquire breaks
-  it). Breaking a stale break lock is not serialized: every waiter that sees it calls the tomb
-  rename on it. So when a breaker dies inside its few-operation break, a late waiter can move a
-  newer break lock to its tomb, and a fourth waiter can take the free name before the link back, so
-  two breakers run at once. Two holders of the lock itself then need a second race of the same shape
-  on the lock. This needs a breaker crash and four waiters inside two windows of a few file
-  operations each, and it is not closed. A lock whose owner cannot be identified (see above) and
-  whose live holder keeps it longer than 10 s can be broken by age.
+- Renames (tomb, atomic JSON write, group move) go through one door, `renameRetry` in
+  `src/core/fsx.ts`: on EPERM, EBUSY or EACCES (Windows: another program holds the file open for a
+  moment) it retries with backoff for about 1 s, then fails; a failed rename never counts as done. On
+  Windows a lock create that fails with EPERM, EACCES or EBUSY (a name still "delete pending") counts as
+  "taken, retry".
+- Known limits of the lock: a live process that hangs inside a critical section while its timer still
+  runs keeps its lock (the lease only proves the event loop runs); a holder whose event loop stalls for
+  more than 10 s (a suspend, a blocking call) loses its lock to a waiter, logs `lease lost`, and its
+  release leaves the new holder's lock alone, but its critical section may overlap the new holder's.
+  A holder that cannot remove its lock on release abandons it: it is stale at once for that process and
+  after 10 s for every other one. Breaking a stale break lock is not serialized: every waiter that sees
+  it calls the tomb rename on it. So when a breaker dies inside its few-operation break, a late waiter
+  can move a newer break lock to its tomb, and a fourth waiter can take the free name before the link
+  back, so two breakers run at once. Two holders of the lock itself then need a second race of the same
+  shape on the lock. This needs a breaker crash and four waiters inside two windows of a few file
+  operations each, and it is not closed.
 - Name ownership. Rename fails with `SUMMIT_NAME_TAKEN` while the name maps to a different uuid whose
   folder exists in this group and whose holder is `alive: true`. A map entry whose uuid has no folder
   in this group is a leftover (a move or a crash left it; a move in progress holds the lock): the
-  name is free, and every claim drops all such entries. A holder with `alive: false` (pid gone or
-  reused) loses the name: the claim takes it over, removes the holder's map entry, sets the holder's
+  name is free, and every claim drops all such entries. A holder with `alive: false` (no server beat it
+  for 15 s) loses the name: the claim takes it over, removes the holder's map entry, sets the holder's
   `agent.json.name` to null (so it never writes a second `<name>.md`) and keeps the holder's folder.
-  A holder with `alive: "unknown"` (OpenCode, a Codex agent whose server pid is gone, or a liveness
-  probe that failed) loses it only with
+  A holder with `alive: "unknown"` (OpenCode) loses it only with
   `force: true` (`/sr <name> --force`, `/sg <group> --force`); the error says so. The map write and
   the caller's `agent.json` write happen under one `members.lock`. A result with a takeover says why:
   `takeover: { from: <uuid>, reason: "holder-gone" | "forced-unknown" }` (`holder-gone`: `alive:
@@ -288,6 +305,16 @@ content, both built in `src/core/notice.ts`:
   (install writes the absolute paths it finds into every registration's env, section 8) and the file
   is still executable, else from PATH (with a log line: the CLI moved after install). A
   daemon-started MCP child may not have the shell PATH.
+- Every external command (`codex`, `opencode`, `claude`, `git`) starts through one spawn door
+  (`src/core/exec.ts`). It looks a bare name up on PATH itself; on Windows it tries each PATHEXT
+  extension (`codex` finds `codex.cmd`, `opencode` finds `opencode.exe`), and "executable" means "a file
+  whose extension is in PATHEXT". A `.cmd` or `.bat` file (an npm shim) runs as `cmd.exe /d /s /c
+  "<line>"`: the shim path in quotes, then each argument quoted for the C runtime parser and
+  caret-escaped twice, once for the `/c` line and once for the shim's `%*` line (`src/core/winCmd.ts`),
+  so the OpenCode JSON payload arrives byte for byte. Anything else is spawned directly, never through a
+  shell. A line break cannot pass through cmd.exe (refused); `%` and `!` are not guaranteed to (the wake
+  payloads hold neither). The pi/OMP extension starts only the node binary (an `.exe`) with the CLI,
+  so it needs no copy of this door.
 - Wake is best effort: `summit_send` returns `{ id, delivered: true, wake: "sent" | "skipped" | "failed", wakeError? }`.
   `sent` means the signal was written, or the wake command exited 0. A non-zero exit, a timeout or a
   spawn error is `failed` with a stderr excerpt in `wakeError`. A failed wake never fails the send.
@@ -318,14 +345,25 @@ content, both built in `src/core/notice.ts`:
 - `summit_bye` removes the map entry, the agent folder and the `.hosts` record. Messages the agent
   sent to others stay in their folders.
 - Harnesses kill MCP children with a signal, not stdin EOF (Codex, Claude Code). The server handles
-  SIGTERM, SIGHUP, SIGINT and stdin end the same way: wait for running tool calls to answer (at most
-  3 s), flush stdout, and exit 0. It never deletes folders on exit.
-- `summit_members` reports `alive: true|false|"unknown"` from `agent.json.pid` and `pidStart` (null pid
-  → "unknown"; a pid that is gone (ESRCH, ENOENT while `/proc` is readable, a zombie) or now has
-  another start time → false; any other probe error → "unknown"). A Codex agent whose server pid is gone reads "unknown", never false: a
-  `codex resume` serves the same thread from a new server, which records its pid only on its first
-  tool call. The same rule decides a name takeover (section 5). One liveness probe
-  (`isProcessAlive`) serves agents and lock owners.
+  SIGTERM, SIGINT, SIGHUP (not on Windows, which has no SIGHUP) and stdin end the same way: wait for
+  running tool calls to answer (at most 3 s), flush stdout, and exit 0. It never deletes folders on
+  exit. On Windows a signal sent to a child terminates it at once, with no handler, so only the stdin
+  end path drains there (the MCP SDK client ends stdin first and kills 2 s later).
+- Heartbeat (no OS process inspection, every OS; `src/core/heartbeat.ts`). Every MCP server, while it
+  runs, sets the mtime of `<group>/<uuid>/.heartbeat` to now (`utimes`, with this machine's clock) for
+  each agent it serves: every 5 s from an unref'd timer, on every tool call of that agent, and at
+  `summit_join`. Which agents a server serves: for Claude Code, pi and OMP the agent of its host key
+  `<harness>-<process.ppid>` once joined (registered at start, after the stale check of section 3); for
+  Codex the agent of each thread id it has seen in a tool call; for OpenCode none (one shared server
+  outlives every session). Each tick finds the agent's folder through its `.hosts` record, so a beat
+  follows a group move; a beat never creates a folder.
+- `summit_members` reports `alive`: `"unknown"` for OpenCode; else `true` while the agent's heartbeat
+  is at most 15 s old, `false` when it is older or missing. The same rule decides a name takeover
+  (section 5). Lock staleness uses its own lease (section 5); no rule reads `agent.json.pid`.
+- Known limits: liveness is "some server beat this agent within 15 s", not "a model session is
+  attached": a Codex server that outlives `/new` keeps the old thread alive until the TUI exits (section
+  6). After an upgrade from a version without heartbeats, an agent served by an old server (a session
+  started before the upgrade) reads `alive: false` until that session restarts.
 
 ## 8. Installation (`harness-summit install`)
 
@@ -353,6 +391,14 @@ claude-session-start`, `hook claude-file-changed`, `notice --host-key <key>`, `i
 - The install state file is written after every action that changed it (write-ahead), so an install
   that fails half way can still be uninstalled, and a re-run does not repeat external commands that
   already ran.
+- The Claude hooks use exec form (`"command": <node>, "args": [<cli>, "hook", <sub>]`): Claude Code
+  spawns node directly, with no shell, on every OS (Claude Code hooks docs, "Exec form and shell form"),
+  so the hook's parent is the claude process and the `process.ppid` fallback of the host pid is right;
+  the hook takes `$CLAUDE_PID` first when it is set. The exec form follows the docs; a live run on a
+  Claude session is still to do on every OS (no model turns in the cross-platform change), and
+  `CLAUDE_PID` was seen only on Linux.
+- External commands that install runs get `HOME` and `USERPROFILE` set to `--home` (Windows programs
+  read `USERPROFILE`).
 - `--help`, no command, `--dry-run` and `doctor` never create the summit root (no log file).
 - Command files for all harnesses are generated from ONE template set in the repo.
 - The build NEVER runs `install` against the real home. Tests use `--home <tmpdir>`. The owner runs

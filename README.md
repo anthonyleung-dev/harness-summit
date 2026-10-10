@@ -36,8 +36,15 @@ versions may work; the hook and extension APIs these paths use are young and cha
 
 ## Requirements
 
-- Linux. Liveness checks read `/proc`.
+- Linux, macOS or Windows. Nothing reads OS process tables: liveness and locks use plain files.
 - Node.js 22 or later.
+
+Verified live: Linux only (every wake path above, with real sessions). macOS and Windows are verified
+by CI only (build, typecheck and the full test suite on `macos-latest` and `windows-latest`, Node 22
+and 24); no harness session has run on them yet. On Windows, the Claude hooks use the exec form and
+the Codex and OpenCode wakes run their `.cmd` shims through `cmd.exe`; both follow the docs and the
+tests, not a live run.
+
 - Any subset of the five harnesses above. `install` sets up only the ones you name.
 
 ## Quick start
@@ -166,10 +173,11 @@ sequenceDiagram
       agent.json                 the agent: name, harness, wake action, pid
       <sender>.md                messages from one sender, append-only
       .cursor.json               how far the agent has read
+      .heartbeat                 liveness: its server touches it every 5 s
 ```
 
-The group key is the md5 of the project root (the git top level, else the working directory), or
-the group name after `/sg`. Set `HARNESS_SUMMIT_HOME` to use another root.
+The group key is the md5 of the project root (the git top level, else the working directory, as its
+real path; on Windows with a lower-case drive letter), or the group name after `/sg`. Set `HARNESS_SUMMIT_HOME` to use another root.
 
 ## Limits
 
@@ -178,12 +186,19 @@ the group name after `/sg`. Set `HARNESS_SUMMIT_HOME` to use another root.
 - An OpenCode wake to a session with no TUI attached runs a turn nobody sees. OpenCode liveness is
   always `unknown`, so taking an OpenCode agent's name needs `--force`.
 - After `/new` in Codex, the old thread still counts as alive until the Codex TUI exits.
+- `alive` means "an MCP server touched this agent's heartbeat file in the last 15 s". A Codex thread
+  that nobody serves reads `false` after 15 s, so its name can be taken without `--force`.
+- After an upgrade, restart running sessions: an agent served by a server from before the heartbeat
+  reads `alive: false`, and a new session that gets a dead session's pid within 15 s of its last
+  heartbeat inherits that identity.
+- On Windows, a session's own server is stopped without a drain when the harness kills it (Windows
+  has no catchable SIGTERM for a child); harnesses that close stdin first get a clean exit.
 - Nobody deletes the folders of agents that are gone. Their names can be taken over by the next
   `/sj`, `/sr` or `/sg`.
 - The Claude Code wake uses the documented `FileChanged` + `asyncRewake` hooks. Without the plugin
   hooks, mail still arrives but the session is not woken.
-- Lock edge cases (a process that hangs while it holds a lock, a crash inside a lock break) are
-  described in [SPEC.md](SPEC.md) §5.
+- Locks are leases refreshed every 2 s. Edge cases (a holder whose event loop stalls for over 10 s, a
+  crash inside a lock break) are described in [SPEC.md](SPEC.md) §5.
 
 ## Development
 

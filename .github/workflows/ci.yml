@@ -1,0 +1,36 @@
+# Build, typecheck, test and format check on Linux, macOS and Windows (XPLAT-AUDIT §6). Action versions
+# are pinned to release tags at least two weeks old.
+name: ci
+
+on:
+    push:
+    pull_request:
+
+permissions:
+    contents: read
+
+jobs:
+    test:
+        name: ${{ matrix.os }} / node ${{ matrix.node }}
+        strategy:
+            fail-fast: false
+            matrix:
+                os: [ubuntu-latest, macos-latest, windows-latest]
+                node: ['22', '24']
+                include:
+                    - os: ubuntu-latest
+                      node: current
+        runs-on: ${{ matrix.os }}
+        timeout-minutes: 20
+        steps:
+            - uses: actions/checkout@v7.0.1
+            - uses: actions/setup-node@v7.0.0
+              with:
+                  node-version: ${{ matrix.node }}
+            # vitest 5 does not install with the npm that ships with Node 22 (repo CLAUDE.md).
+            - run: npm install -g npm@latest
+            - run: npm ci
+            - run: npm run build
+            - run: npm run typecheck
+            - run: npx vitest run
+            - run: npm run format:check
