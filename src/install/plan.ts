@@ -50,9 +50,10 @@ export function registrationFor(
     }
 }
 
-// Purpose: env for external commands, pointed at the chosen home.
+// Purpose: env for external commands, pointed at the chosen home. Windows programs find the home through
+// USERPROFILE, not HOME (XPLAT-AUDIT D22), so both are set.
 function execEnv(home: string): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home }
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home }
     if (path.resolve(home) !== path.resolve(os.homedir())) env.XDG_CONFIG_HOME = path.join(home, '.config')
     return env
 }

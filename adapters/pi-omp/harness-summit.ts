@@ -10,6 +10,12 @@
 // ~/.pi/agent/extensions or ~/.omp/agent/extensions. Host key, signal path and notice text all come
 // from the CLI (`hook ext-arm`, `notice`), so this file holds none of that logic. `install` replaces
 // the two INJECTED_ constants; a copy loaded from the repo finds the CLI next to itself.
+//
+// Spawning (XPLAT-AUDIT B4): this file starts exactly one program, the node binary that ran install
+// (`process.execPath`, a real `.exe` on Windows), with the CLI as its first argument. It never starts a
+// `.cmd` shim, so it needs no copy of the Windows batch-file door (src/core/exec.ts): every other
+// command runs inside the CLI, through that door. The repo fallback is the bare name `node`, which
+// libuv finds as `node.exe` on Windows.
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -41,7 +47,8 @@ interface Armed {
 // Purpose: which harness hosts this extension: injected by install, else from the process.
 export function detectHarness(api: { registerMcpServer?: unknown }): HostHarness {
     if (INJECTED_HARNESS === 'pi' || INJECTED_HARNESS === 'omp') return INJECTED_HARNESS
-    const names = [process.execPath, ...process.argv].map((a) => path.basename(String(a)))
+    // `omp.exe` and `pi.exe` on Windows: compare names without the extension.
+    const names = [process.execPath, ...process.argv].map((a) => path.basename(String(a)).replace(/\.exe$/i, ''))
     if (names.some((n) => n === 'omp' || n.startsWith('omp-'))) return 'omp'
     if (names.some((n) => n === 'pi' || n.includes('pi-coding-agent'))) return 'pi'
     return typeof api.registerMcpServer === 'function' ? 'pi' : 'omp'
@@ -77,17 +84,22 @@ export function parseArmed(stdout: string): Armed {
 function runCli(args: string[]): Promise<string> {
     const [cmd, ...pre] = cliLaunch()
     return new Promise((resolve, reject) => {
-        execFile(cmd as string, [...pre, ...args], { timeout: CLI_TIMEOUT_MS }, (err, stdout, stderr) => {
-            if (err) {
-                const e: ExtError = {
-                    code: 'SUMMIT_EXEC_FAILED',
-                    message: `${err.message} ${stderr}`.trim(),
-                    fn: 'runCli',
-                    inputs: { args },
-                }
-                reject(e)
-            } else resolve(stdout)
-        })
+        execFile(
+            cmd as string,
+            [...pre, ...args],
+            { timeout: CLI_TIMEOUT_MS, windowsHide: true },
+            (err, stdout, stderr) => {
+                if (err) {
+                    const e: ExtError = {
+                        code: 'SUMMIT_EXEC_FAILED',
+                        message: `${err.message} ${stderr}`.trim(),
+                        fn: 'runCli',
+                        inputs: { args },
+                    }
+                    reject(e)
+                } else resolve(stdout)
+            },
+        )
     })
 }
 

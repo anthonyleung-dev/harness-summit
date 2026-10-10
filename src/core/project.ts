@@ -1,11 +1,10 @@
 // Session cwd, project root and group key (SPEC §4).
-import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import { z } from 'zod'
 
 import { summitError } from './errors.js'
-import { cliBin, type Exec } from './exec.js'
+import { captureSync, cliBin, type Exec } from './exec.js'
 import { pathExists } from './fsx.js'
 import { CODEX_TURN_META_KEY, opencodeSessionId, type RequestMeta } from './hostKey.js'
 import { log } from './log.js'
@@ -77,21 +76,34 @@ export async function resolveCwd(
     return { cwd: process.cwd(), cwdSource: 'process.cwd' }
 }
 
-// Purpose: git top level of cwd when inside a work tree, else the realpath of cwd.
+// Purpose: one string per project directory on every OS (XPLAT-AUDIT D11), so one project gives one
+// group key: on Windows, one separator (a backslash; git prints `C:/x/y`) and a lower-case drive letter
+// (`C:\demo` and `c:\demo` are the same directory). Other platforms keep the path as it is.
+export function normalizeRootPath(p: string, platform: NodeJS.Platform = process.platform): string {
+    if (platform !== 'win32') return p
+    const one = p.replace(/\//g, '\\')
+    return /^[A-Za-z]:/.test(one) ? one[0]!.toLowerCase() + one.slice(1) : one
+}
+
+// Purpose: the canonical path of an existing directory: its realpath as the OS reports it
+// (`realpathSync.native` also gives the on-disk letter case on macOS and Windows), normalized.
+function canonicalDir(dir: string): string {
+    return normalizeRootPath(fs.realpathSync.native(dir))
+}
+
+// Purpose: git top level of cwd when inside a work tree, else the realpath of cwd; normalized either way.
+// git runs through the spawn door (src/core/exec.ts), so `git.exe` or a `git.cmd` shim both work.
 export function projectRootOf(cwd: string): string {
+    const top = captureSync('git', ['rev-parse', '--show-toplevel'], { cwd, timeoutMs: 5000 })?.trim() ?? ''
+    if (top !== '') {
+        try {
+            return canonicalDir(top)
+        } catch (err) {
+            log('debug', 'projectRootOf', 'git top level not resolvable; using the cwd', { top, error: String(err) })
+        }
+    } else log('debug', 'projectRootOf', 'not a git work tree; using the realpath', { cwd })
     try {
-        const out = execFileSync('git', ['rev-parse', '--show-toplevel'], {
-            cwd,
-            stdio: ['ignore', 'pipe', 'ignore'],
-            timeout: 5000,
-        })
-        const top = out.toString().trim()
-        if (top !== '') return fs.realpathSync(top)
-    } catch {
-        log('debug', 'projectRootOf', 'not a git work tree; using the realpath', { cwd })
-    }
-    try {
-        return fs.realpathSync(cwd)
+        return canonicalDir(cwd)
     } catch (err) {
         throw summitError('SUMMIT_IO', `cannot resolve cwd ${cwd}`, 'projectRootOf', { cwd }, err)
     }
