@@ -5,7 +5,12 @@
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "\"node\" \"${CLAUDE_PLUGIN_ROOT}/../../dist/cli.js\" hook claude-session-start",
+                        "command": "node",
+                        "args": [
+                            "${CLAUDE_PLUGIN_ROOT}/../../dist/cli.js",
+                            "hook",
+                            "claude-session-start"
+                        ],
                         "timeout": 20
                     }
                 ]
@@ -16,7 +21,12 @@
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "\"node\" \"${CLAUDE_PLUGIN_ROOT}/../../dist/cli.js\" hook claude-file-changed",
+                        "command": "node",
+                        "args": [
+                            "${CLAUDE_PLUGIN_ROOT}/../../dist/cli.js",
+                            "hook",
+                            "claude-file-changed"
+                        ],
                         "asyncRewake": true,
                         "timeout": 20
                     }

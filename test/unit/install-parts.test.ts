@@ -150,7 +150,7 @@ describe('command templates', () => {
         }
     })
 
-    it('marks Claude skills user-only and ships hooks without matcher, rewakeMessage or watchPaths', () => {
+    it('marks Claude skills user-only and ships exec-form hooks without matcher, rewakeMessage or watchPaths', () => {
         const files = renderClaudePlugin({ node: 'N', cli: 'C' })
         expect(
             files
@@ -161,10 +161,23 @@ describe('command templates', () => {
         expect(hooks.FileChanged).toEqual([
             {
                 hooks: [
-                    { type: 'command', command: '"N" "C" hook claude-file-changed', asyncRewake: true, timeout: 20 },
+                    {
+                        type: 'command',
+                        command: 'N',
+                        args: ['C', 'hook', 'claude-file-changed'],
+                        asyncRewake: true,
+                        timeout: 20,
+                    },
                 ],
             },
         ])
+        // Exec form (XPLAT-AUDIT B5): `args` present, so Claude Code spawns node with no shell on every OS.
+        expect(hooks.SessionStart[0].hooks[0]).toEqual({
+            type: 'command',
+            command: 'N',
+            args: ['C', 'hook', 'claude-session-start'],
+            timeout: 20,
+        })
         expect(hooks.SessionStart[0].matcher).toBeUndefined()
         expect(JSON.stringify(hooks)).not.toMatch(/rewake(Message|Summary)/)
     })

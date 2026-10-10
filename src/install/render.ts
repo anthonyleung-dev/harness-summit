@@ -89,10 +89,13 @@ export function renderCommands(harness: Harness): RenderedFile[] {
     return COMMANDS.map((c) => renderCommand(harness, c))
 }
 
-// Purpose: one hook command line: a single simple command, so the shell execs node and the hook's
-// parent stays the claude process.
-function hookCommand(launch: Launch, sub: string): string {
-    return `"${launch.node}" "${launch.cli}" hook ${sub}`
+// Purpose: one hook in exec form (`command` + `args`, XPLAT-AUDIT B5): Claude Code spawns node directly
+// with no shell on every OS, so no shell parses the paths (PowerShell on Windows cannot run a quoted
+// path followed by a second string) and the hook's parent is the claude process itself (the ppid
+// fallback of `claudePid`, src/cli/hooks.ts). Path placeholders (`${CLAUDE_PLUGIN_ROOT}`) are expanded
+// in each `args` element.
+function hookCommand(launch: Launch, sub: string): { type: 'command'; command: string; args: string[] } {
+    return { type: 'command', command: launch.node, args: [launch.cli, 'hook', sub] }
 }
 
 // Purpose: every file of the Claude Code plugin (manifest, MCP server, hooks, skills).
@@ -105,15 +108,12 @@ export function renderClaudePlugin(launch: Launch): RenderedFile[] {
     const mcp = { mcpServers: { [SUMMIT_NAME]: mcpLaunch(launch, 'claude') } }
     const hooks = {
         hooks: {
-            SessionStart: [
-                { hooks: [{ type: 'command', command: hookCommand(launch, 'claude-session-start'), timeout: 20 }] },
-            ],
+            SessionStart: [{ hooks: [{ ...hookCommand(launch, 'claude-session-start'), timeout: 20 }] }],
             FileChanged: [
                 {
                     hooks: [
                         {
-                            type: 'command',
-                            command: hookCommand(launch, 'claude-file-changed'),
+                            ...hookCommand(launch, 'claude-file-changed'),
                             asyncRewake: true,
                             timeout: 20,
                         },
