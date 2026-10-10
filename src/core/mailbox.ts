@@ -6,14 +6,7 @@ import { readJsonFile, writeJsonAtomic } from './fsx.js'
 import { log } from './log.js'
 import { cursorFile, FILE_MODE, inboxFile } from './paths.js'
 import { formatRecord, parseRecords } from './records.js'
-import {
-    CursorSchema,
-    NAME_PATTERN,
-    UUID_PATTERN,
-    type CorruptSpan,
-    type Cursor,
-    type MessageRecord,
-} from './schemas.js'
+import { isSenderLabel, CursorSchema, type CorruptSpan, type Cursor, type MessageRecord } from './schemas.js'
 
 export interface UnreadScan {
     records: MessageRecord[]
@@ -57,8 +50,7 @@ async function readFrom(file: string, offset: number): Promise<Buffer> {
 // the folder (notes a model wrote, editor files) is never parsed.
 export function isInboxName(fileName: string): boolean {
     if (!fileName.endsWith('.md')) return false
-    const label = fileName.slice(0, -'.md'.length)
-    return NAME_PATTERN.test(label) || UUID_PATTERN.test(label)
+    return isSenderLabel(fileName.slice(0, -'.md'.length))
 }
 
 // Purpose: every sender inbox file name in the folder.

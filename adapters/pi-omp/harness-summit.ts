@@ -5,7 +5,8 @@
 //        session id in its env (SUMMIT_SESSION_ID); pi restarts that server for every session, so the env
 //        is always current. Install writes no pi mcp.json entry: one of the same name would win.
 //   OMP: records the session id for its MCP server, which OMP keeps across `/new` (`hook ext-arm` writes
-//        `<root>/.sessions/omp-<process.pid>.json`). Only in an interactive session (ctx.hasUI).
+//        `<root>/.sessions/omp-<process.pid>.json`), and renews it on every agent_start (`hook ext-session`).
+//        Only in an interactive session (ctx.hasUI).
 // Then (only with a UI) it arms the signal file `<root>/.wake/<harness>-<sessionId>.signal`, watches it,
 // and when a sender rings it, asks the CLI for the notice and wakes the session:
 //   pi  idle: custom message, then a steer user message (parent-wake shape, 10 s dedupe)
@@ -228,5 +229,11 @@ export default function harnessSummit(api: any): void {
     api.on('agent_start', () => {
         wakeSentAt = undefined
         log('debug', 'agentStart', 'wake dedupe reset')
+        // OMP: renew the session file on every turn (an OMP-restarted server trusts it again). Not awaited.
+        const sessionId = sessionIdOf(ctx)
+        if (harness !== 'omp' || ctx?.hasUI !== true || sessionId === undefined) return
+        runCli(['hook', 'ext-session', '--session', sessionId, '--pid', String(process.pid)]).catch((err) =>
+            log('warn', 'agentStart', 'session renew failed', { error: err as ExtError }),
+        )
     })
 }

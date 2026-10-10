@@ -1,6 +1,7 @@
 // Session cwd, project root and group key (SPEC §4).
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
+import path from 'node:path'
 import { z } from 'zod'
 
 import { summitError } from './errors.js'
@@ -83,6 +84,15 @@ export function normalizeRootPath(p: string, platform: NodeJS.Platform = process
     if (platform !== 'win32') return p
     const one = p.replace(/\//g, '\\')
     return /^[A-Za-z]:/.test(one) ? one[0]!.toLowerCase() + one.slice(1) : one
+}
+
+// Purpose: tell whether two paths name the same file, through the one normalizer: resolved,
+// normalizeRootPath, and on Windows compared ignoring letter case in the whole path (NTFS ignores it;
+// Claude reports the changed file with backslashes there).
+export function samePath(a: string, b: string, platform: NodeJS.Platform = process.platform): boolean {
+    const p = platform === 'win32' ? path.win32 : path.posix
+    const norm = (x: string) => normalizeRootPath(p.resolve(x), platform)
+    return platform === 'win32' ? norm(a).toLowerCase() === norm(b).toLowerCase() : norm(a) === norm(b)
 }
 
 // Purpose: the canonical path of an existing directory: its realpath as the OS reports it

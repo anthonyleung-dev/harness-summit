@@ -1,6 +1,6 @@
 // Group name map `members.json` and its lock `members.lock` (SPEC §4, §5). Every write holds the lock
 // (src/core/lock.ts: O_EXCL create, owner line, a lease its holder refreshes; stale when nobody refreshed
-// it for LOCK_STALE_MS).
+// it for STALE_MS).
 import { readJsonFile, writeJsonAtomic } from './fsx.js'
 import { withLock, type LockOptions } from './lock.js'
 import { log } from './log.js'
@@ -67,18 +67,25 @@ export function withoutUuid(m: Members, uuid: string): Members {
     return { version: 1, members: Object.fromEntries(Object.entries(m.members).filter(([, u]) => u !== uuid)) }
 }
 
-// Purpose: the map key that equals `name` ignoring letter case, or undefined. Names are unique ignoring
-// case (`Alice` and `alice` cannot both exist), because each name is an inbox file name and macOS and
-// Windows file systems ignore case by default. The one comparison: claims and lookups use it.
-export function nameKey(m: Members, name: string): string | undefined {
+// Purpose: every map key that equals `name` ignoring letter case, the exact key first. New names are
+// unique ignoring case (`Alice` and `alice` cannot both be claimed), because each name is an inbox file
+// name and macOS and Windows file systems ignore case by default; a map written by an older version may
+// still hold such a pair. The one comparison: claims and lookups use it.
+export function nameKeys(m: Members, name: string): string[] {
     const wanted = name.toLowerCase()
-    return Object.keys(m.members).find((k) => k.toLowerCase() === wanted)
+    const keys = Object.keys(m.members).filter((k) => k.toLowerCase() === wanted)
+    return [...keys.filter((k) => k === name), ...keys.filter((k) => k !== name)]
 }
 
-// Purpose: map `name` to `uuid`, replacing any entry whose key equals `name` ignoring case.
-export function withName(m: Members, name: string, uuid: string): Members {
-    const key = nameKey(m, name)
-    const members = Object.fromEntries(Object.entries(m.members).filter(([k]) => k !== key))
+// Purpose: the map key a lookup of `name` uses: the exact key when present, else a case match.
+export function nameKey(m: Members, name: string): string | undefined {
+    return nameKeys(m, name)[0]
+}
+
+// Purpose: map `name` to `uuid`. `replaceKey` is the one entry a claim judged and took over (it may differ
+// in case); no other entry is removed.
+export function withName(m: Members, name: string, uuid: string, replaceKey?: string): Members {
+    const members = Object.fromEntries(Object.entries(m.members).filter(([k]) => k !== replaceKey))
     return { version: 1, members: { ...members, [name]: uuid } }
 }
 

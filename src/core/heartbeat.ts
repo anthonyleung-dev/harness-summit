@@ -72,7 +72,9 @@ export async function cleanupBeats(root: string, now = Date.now()): Promise<void
     for (const name of names) {
         const file = path.join(aliveDir(root), name)
         const mtime = await mtimeOf(file).catch(() => null)
-        if (mtime !== null && now - mtime > CLEANUP_AGE_MS) await fs.rm(file, { force: true }).catch(() => undefined)
+        // Math.abs: a stamp far in the future is cleaned up too.
+        if (mtime !== null && Math.abs(now - mtime) > CLEANUP_AGE_MS)
+            await fs.rm(file, { force: true }).catch(() => undefined)
     }
 }
 

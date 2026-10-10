@@ -27,6 +27,8 @@ import { DIR_MODE, FILE_MODE, sessionFile, sessionsDir } from './paths.js'
 
 // How much earlier than its server's start a session file may be written and still be trusted.
 export const SESSION_CLOCK_TOLERANCE_MS = 30_000
+// Session files whose rejection was logged already (one warn per file and `at`).
+const rejectedLogged = new Set<string>()
 
 // One session file.
 export const SessionFileSchema = z.object({
@@ -77,29 +79,48 @@ export async function readSession(
     if (file === null) return null
     const at = Date.parse(file.at)
     if (opts.notBefore !== undefined && !(at >= opts.notBefore)) {
-        log('warn', 'readSession', 'session file older than this server; ignored (hooks did not run?)', {
-            harness,
-            pid,
-            at: file.at,
-            notBefore: new Date(opts.notBefore).toISOString(),
-        })
+        // Once per (file, at): the timer reads it every 2 s.
+        const seen = `${harness}-${pid}-${file.at}`
+        if (!rejectedLogged.has(seen)) {
+            rejectedLogged.add(seen)
+            log('warn', 'readSession', 'session file older than this server; ignored (hooks did not run?)', {
+                harness,
+                pid,
+                at: file.at,
+                notBefore: new Date(opts.notBefore).toISOString(),
+            })
+        }
         return null
     }
     return file.sessionId
 }
 
+// Purpose: the harness and pid of a session file name, or null for any other file: the name must be
+// exactly what sessionFile (the one name builder) gives for them.
+function sessionFileOwner(root: string, name: string): { harness: string; pid: number } | null {
+    for (const harness of SESSION_FILE_HARNESSES) {
+        const pid = Number(name.slice(harness.length + 1, -'.json'.length))
+        if (Number.isInteger(pid) && pid > 0 && path.basename(sessionFile(root, harness, pid)) === name)
+            return { harness, pid }
+    }
+    return null
+}
+
 // Purpose: at server start, delete session files older than CLEANUP_AGE_MS whose session nobody beats
 // any more (a live claude can run one session for days: its file stays). Best effort, logged.
 export async function cleanupSessions(root: string, now = Date.now()): Promise<void> {
-    const names = await fsp.readdir(sessionsDir(root)).catch(() => [] as string[])
+    const names = new Set(await fsp.readdir(sessionsDir(root)).catch(() => [] as string[]))
     for (const name of names) {
-        const m = /^([a-z]+)-(\d+)\.json$/.exec(name)
-        if (m === null || !SESSION_FILE_HARNESSES.includes(m[1] as never)) continue
-        const file = await readJsonFile(path.join(sessionsDir(root), name), SessionFileSchema).catch(() => null)
-        if (file === null || now - Date.parse(file.at) <= CLEANUP_AGE_MS) continue
-        const beat = await beatTime(root, joinHostKey(m[1] as string, file.sessionId))
+        const owner = sessionFileOwner(root, name)
+        if (owner === null) continue
+        const file = await readJsonFile(sessionFile(root, owner.harness, owner.pid), SessionFileSchema).catch(
+            () => null,
+        )
+        // Math.abs: a stamp far in the future (a clock set back, or set by hand) is cleaned up too.
+        if (file === null || Math.abs(now - Date.parse(file.at)) <= CLEANUP_AGE_MS) continue
+        const beat = await beatTime(root, joinHostKey(owner.harness, file.sessionId))
         if (beat !== null && !isStaleMtime(beat, now)) continue
-        await fsp.rm(path.join(sessionsDir(root), name), { force: true }).catch(() => undefined)
+        await fsp.rm(sessionFile(root, owner.harness, owner.pid), { force: true }).catch(() => undefined)
         log('info', 'cleanupSessions', 'removed an old session file', { name, sessionId: file.sessionId })
     }
 }

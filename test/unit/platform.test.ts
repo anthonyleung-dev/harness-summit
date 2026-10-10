@@ -7,8 +7,8 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { renameRetry } from '../../src/core/fsx.js'
-import { defaultGroupKey, normalizeRootPath, projectRootOf } from '../../src/core/project.js'
-import { exitSignals } from '../../src/server/server.js'
+import { defaultGroupKey, normalizeRootPath, projectRootOf, samePath } from '../../src/core/project.js'
+import { exitSignals, restrictRoot } from '../../src/server/server.js'
 import { errno, tmpDir } from '../helpers/env.js'
 
 describe('project root normalization', () => {
@@ -65,5 +65,32 @@ describe('rename retry', () => {
         spy.mockRejectedValue(errno('ENOENT'))
         await expect(renameRetry(to, from)).rejects.toMatchObject({ code: 'ENOENT' })
         expect(spy).toHaveBeenCalledTimes(1)
+    })
+})
+
+describe('modes and path comparison (team review R2)', () => {
+    it.skipIf(process.platform === 'win32')(
+        'a server start sets a root that an older version created 0755 to 0700',
+        async () => {
+            // Windows keeps only the write bit, so there is no mode to set (restrictRoot returns at once).
+            const root = tmpDir('oldroot')
+            fs.chmodSync(root, 0o755)
+            await restrictRoot(root)
+            expect(fs.statSync(root).mode & 0o777).toBe(0o700)
+            await restrictRoot(path.join(root, 'not-yet'))
+        },
+    )
+
+    it('samePath on Windows ignores letter case in the whole path and the separator form', () => {
+        expect(
+            samePath(
+                'C:\\Users\\Ann\\.harness-summit\\.wake\\claude-S.signal',
+                'c:/users/ann/.HARNESS-summit/.wake/claude-S.signal',
+                'win32',
+            ),
+        ).toBe(true)
+        expect(samePath('C:\\a\\b.signal', 'C:\\a\\c.signal', 'win32')).toBe(false)
+        expect(samePath('/a/B.signal', '/a/b.signal', 'linux')).toBe(false)
+        expect(samePath('/a/x/../b.signal', '/a/b.signal', 'linux')).toBe(true)
     })
 })

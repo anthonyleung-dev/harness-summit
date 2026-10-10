@@ -196,3 +196,23 @@ describe('session refresh by UserPromptSubmit and FileChanged (a server reconnec
         expect(await whoami(call)).toEqual({ joined: false, hostKey: `claude-${sid}` })
     })
 })
+
+describe('FileChanged never switches the session (team review R2)', () => {
+    it('SessionStart S1, SessionStart clear S2, a late FileChanged for S1: the server still resolves S2', async () => {
+        const root = tmpRoot()
+        const env = { HARNESS_SUMMIT_HOME: root, CLAUDE_PID: '' }
+        const start = (sid: string, source: string) =>
+            runCli(['hook', 'claude-session-start'], { env, stdin: sessionStartInput(source, sid) })
+        await start('S1', 'startup')
+        const call = callFor(root, 'claude', { hostPid: CLAUDE_PID, session: 'S1' })
+        await start('S2', 'clear')
+        // A wake hook that began before /clear finishes now, with the old session id in its stdin.
+        const late = await runCli(['hook', 'claude-file-changed'], {
+            env,
+            stdin: fileChangedInput(signalPathFor(root, 'claude-S1'), 'change', 'S1'),
+        })
+        expect(late.code).toBe(0)
+        expect(await readSession(root, 'claude', CLAUDE_PID)).toBe('S2')
+        expect(await whoami(call)).toEqual({ joined: false, hostKey: 'claude-S2' })
+    })
+})

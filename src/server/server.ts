@@ -1,5 +1,6 @@
 // The MCP stdio server: registers the eight tools and maps every call to a CallContext. Logs go to
 // stderr and the log file only; stdout carries the protocol.
+import fs from 'node:fs/promises'
 import type { z } from 'zod'
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
@@ -11,7 +12,7 @@ import { defaultExec, type Exec } from '../core/exec.js'
 import { cleanupBeats, startHeartbeat } from '../core/heartbeat.js'
 import { isSignalHarness, PI_SESSION_ENV, type RequestMeta } from '../core/hostKey.js'
 import { configureLog, log } from '../core/log.js'
-import { summitRoot } from '../core/paths.js'
+import { DIR_MODE, summitRoot } from '../core/paths.js'
 import { SUMMIT_NAME, type Harness } from '../core/schemas.js'
 import { cleanupSessions } from '../core/sessions.js'
 import { callHostKey, type CallContext } from '../flows/context.js'
@@ -143,11 +144,22 @@ function installExitHandlers(harness: Harness, stopHeartbeat: () => void): void 
     process.stdin.once('end', () => exit('stdin end'))
 }
 
+// Purpose: set the summit root to DIR_MODE once at start, so a root that an older version created 0755
+// blocks traversal by other users (files it created keep their old modes; new ones are 0600). Quiet where
+// the OS has no POSIX modes (Windows) or the root does not exist yet (created 0700 on first write).
+export async function restrictRoot(root: string, platform: NodeJS.Platform = process.platform): Promise<void> {
+    if (platform === 'win32') return
+    await fs
+        .chmod(root, DIR_MODE)
+        .catch((err: unknown) => log('debug', 'restrictRoot', 'root mode not changed', { root, error: String(err) }))
+}
+
 // Purpose: start this server's heartbeat (SPEC §7): drop heartbeat files of long-ended sessions, then
 // beat the host's current session key on every tick (claude and omp read their session file each time,
 // so `/clear` and `/new` move the beat to the new session; pi's key is fixed by its env). Codex keys are
 // added by the calls themselves (beatCaller); opencode beats nothing.
 export async function startServing(root: string, base: CallContext): Promise<() => void> {
+    await restrictRoot(root)
     await cleanupSessions(root).catch((err: unknown) =>
         log('warn', 'startServing', 'session file cleanup failed', { error: String(err) }),
     )

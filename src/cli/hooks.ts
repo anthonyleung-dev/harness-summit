@@ -11,7 +11,7 @@ import { hostKeyForSession } from '../core/hostKey.js'
 import { log, logFilePath } from '../core/log.js'
 import { noticeForHostKey } from '../core/notice.js'
 import { signalPathFor } from '../core/paths.js'
-import { normalizeRootPath } from '../core/project.js'
+import { samePath } from '../core/project.js'
 import type { Harness } from '../core/schemas.js'
 import { readSession, writeSession } from '../core/sessions.js'
 import { ensureSignal } from '../core/signal.js'
@@ -61,13 +61,6 @@ export function claudePid(env: NodeJS.ProcessEnv, ppid: number): number {
     return ppid
 }
 
-// Purpose: tell whether two paths name the same file, compared through the one path normalizer
-// (normalizeRootPath: one separator and a lower-case drive letter on Windows; Claude reports the
-// changed file with backslashes there).
-function samePath(a: string, b: string): boolean {
-    return normalizeRootPath(path.resolve(a)) === normalizeRootPath(path.resolve(b))
-}
-
 // Purpose: arm the signal file of a session's host key (touch: never truncate) and return its path.
 export async function armSignal(root: string, hostKey: string): Promise<{ hostKey: string; signalPath: string }> {
     const signalPath = signalPathFor(root, hostKey)
@@ -106,10 +99,23 @@ export async function claudeSessionStart(stdin: string, he: HookEnv): Promise<Ho
 // Purpose: refresh the session file of this claude process from a hook's stdin `session_id` (the same
 // writer and content as SessionStart, with a new `at`), so a server that started after the last
 // SessionStart (a `/mcp` reconnect) trusts the file again (src/core/sessions.ts). Without a session id
-// in stdin nothing is written. Never throws: a failed refresh is logged and the hook goes on.
-async function refreshSession(he: HookEnv, sessionId: string | undefined, fn: string): Promise<void> {
+// in stdin nothing is written. With `sameIdOnly` (FileChanged) it only renews the recorded session and
+// never switches it: a wake hook that started before a `/clear` and finishes after it must not put the
+// old session back. Only SessionStart and UserPromptSubmit change the id. Never throws: a failed refresh
+// is logged and the hook goes on.
+async function refreshSession(
+    he: HookEnv,
+    sessionId: string | undefined,
+    fn: string,
+    opts: { sameIdOnly?: boolean } = {},
+): Promise<void> {
     if (sessionId === undefined || sessionId === '') return
-    await writeSession(he.root, 'claude', claudePid(he.env, he.ppid), sessionId).catch((err) =>
+    const pid = claudePid(he.env, he.ppid)
+    if (opts.sameIdOnly === true && (await readSession(he.root, 'claude', pid)) !== sessionId) {
+        log('debug', fn, 'stdin session differs from the recorded one; not refreshed', { sessionId })
+        return
+    }
+    await writeSession(he.root, 'claude', pid, sessionId).catch((err) =>
         log('warn', fn, 'session refresh failed', { error: toSummitError(err, fn).toJSON() }),
     )
 }
@@ -129,7 +135,7 @@ export async function claudePromptSubmit(stdin: string, he: HookEnv): Promise<Ho
 export async function claudeFileChanged(stdin: string, he: HookEnv): Promise<HookResult> {
     const input = parseStdin(stdin, FileChangedInput, 'claudeFileChanged')
     // A wake also refreshes the session file, so a reconnected server works again from the next wake.
-    await refreshSession(he, input.session_id, 'claudeFileChanged')
+    await refreshSession(he, input.session_id, 'claudeFileChanged', { sameIdOnly: true })
     try {
         const sessionId = await readSession(he.root, 'claude', claudePid(he.env, he.ppid))
         if (sessionId === null) {
@@ -139,9 +145,12 @@ export async function claudeFileChanged(stdin: string, he: HookEnv): Promise<Hoo
         const hostKey = hostKeyForSession('claude', sessionId)
         const ours = signalPathFor(he.root, hostKey)
         if (input.file_path === undefined || !samePath(input.file_path, ours) || input.event === 'unlink') {
-            log('warn', 'claudeFileChanged', 'not our signal', { file: input.file_path, ours, event: input.event })
+            log('debug', 'claudeFileChanged', 'not our signal', { file: input.file_path, ours, event: input.event })
             return { exitCode: 0 }
         }
+        // Ours, but written another way (Windows separators or letter case): the mismatch worth seeing.
+        if (path.resolve(input.file_path) !== ours)
+            log('warn', 'claudeFileChanged', 'signal path differs only in form', { file: input.file_path, ours })
         const notice = await noticeForHostKey(he.root, hostKey)
         if (notice === null) return { exitCode: 0 }
         log('info', 'claudeFileChanged', 'waking', { hostKey })
@@ -150,6 +159,13 @@ export async function claudeFileChanged(stdin: string, he: HookEnv): Promise<Hoo
         log('error', 'claudeFileChanged', 'failed', { error: toSummitError(err, 'claudeFileChanged').toJSON() })
         return { exitCode: 0 }
     }
+}
+
+// Purpose: `hook ext-session`: the OMP extension renews its session file on every agent start (same
+// writer), so a server that OMP restarted later trusts it again from the next turn. Prints nothing.
+export async function extSession(sessionId: string, pid: number, root: string): Promise<HookResult> {
+    await writeSession(root, 'omp', pid, sessionId)
+    return { exitCode: 0 }
 }
 
 // Purpose: `hook ext-arm`: the pi/OMP extension's arm call on every session start or switch. OMP keeps its

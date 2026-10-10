@@ -11,7 +11,7 @@ import { loadHost } from './identity.js'
 import { log } from './log.js'
 import { scanUnread } from './mailbox.js'
 import { mailboxOf } from './paths.js'
-import { SenderLabelSchema, type MessageRecord } from './schemas.js'
+import { isSenderLabel, type MessageRecord } from './schemas.js'
 
 // Purpose: the exact argument shape of an answer. A model mirrors the `body` field of summit_read
 // unless the text field is named (OMP, 2026-10-10), so the rules and every replyHint name `message`.
@@ -48,11 +48,11 @@ export const SUMMIT_GUIDANCE =
     mailRules('the current work')
 
 // Purpose: notice text for a set of unread records, or null when there are none.
-// A label that fails SenderLabelSchema is never placed in a notice (records are checked on read already;
+// A label that fails isSenderLabel is never placed in a notice (records are checked on read already;
 // this keeps the rule at the one place that builds the text).
 export function buildNotice(unread: Pick<MessageRecord, 'from'>[]): string | null {
     if (unread.length === 0) return null
-    const label = (from: string) => (SenderLabelSchema.safeParse(from).success ? from : 'unknown')
+    const label = (from: string) => (isSenderLabel(from) ? from : 'unknown')
     const senders = [...new Set(unread.map((r) => label(r.from)))]
     return `[harness-summit] ${unread.length} unread message(s) from ${senders.join(', ')} in your summit group. Call the summit_read tool to read them.`
 }

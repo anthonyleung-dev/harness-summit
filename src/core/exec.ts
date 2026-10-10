@@ -11,7 +11,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { summitError } from './errors.js'
+import { summitError, toSummitError } from './errors.js'
 import { log } from './log.js'
 import { cmdArgs, isBatchFile } from './winCmd.js'
 
@@ -210,7 +210,8 @@ export function captureSync(cmd: string, args: string[], opts: { cwd: string; ti
     try {
         plan = spawnPlan(cmd, args)
     } catch (err) {
-        log('debug', 'captureSync', 'command not found', { cmd, error: String(err) })
+        // Not found, or refused by the cmd.exe rules (SUMMIT_BAD_INPUT): the error says which.
+        log('debug', 'captureSync', 'command not started', { cmd, error: toSummitError(err, 'captureSync').toJSON() })
         return null
     }
     const res = spawnSync(plan.file, plan.args, {

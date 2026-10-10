@@ -114,6 +114,9 @@ describe('heartbeat liveness', () => {
         await beat(root, 'claude-S-day', 'claude')
         ageBeat(root, 'claude-S-old', CLEANUP_AGE_MS + 60_000)
         ageBeat(root, 'claude-S-day', CLEANUP_AGE_MS - 60_000)
+        // A stamp far in the future (a clock set back, `touch -d 2099`) is cleaned up too.
+        await beat(root, 'claude-S-future', 'claude')
+        ageBeat(root, 'claude-S-future', -(CLEANUP_AGE_MS + 60_000))
         await cleanupBeats(root)
         expect(fs.readdirSync(aliveDir(root)).sort()).toEqual(['claude-S-day.json'])
     })

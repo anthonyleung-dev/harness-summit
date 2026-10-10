@@ -17,25 +17,40 @@ export const UuidSchema = z.string().regex(UUID_PATTERN, 'must be a lower-case u
 // name never shadows a uuid. The one name schema: tool inputs, rename and agent.json use it.
 export const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/
 
-// Windows device names: a file `nul.md` or a folder `con` is the device, not a file, on Windows (also
-// with the superscript digits Windows accepts). The one definition: names and group names refuse them,
-// on every OS, so a group works the same everywhere.
-const RESERVED_NAME = /^(con|prn|aux|nul|com[0-9\u00b9\u00b2\u00b3]|lpt[0-9\u00b9\u00b2\u00b3])$/i
+// Windows device names: a file `nul.md` or a folder `con` is the device, not a file, on Windows. The
+// name patterns are ASCII-only, so the superscript-digit forms Windows also reserves cannot occur. The
+// one definition. It applies only where a NEW name or group is chosen (validateName, claimName,
+// namedGroupKey): names and mail that older versions wrote stay readable, and such an agent can rename
+// away.
+const RESERVED_NAME = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i
 
 // Purpose: tell whether a name is a Windows device name (case-insensitive).
 export function isReservedName(name: string): boolean {
     return RESERVED_NAME.test(name)
 }
 
-export const NameSchema = z
+// A display name as stored (agent.json, the name map, a record's sender): the charset and "not a uuid",
+// as every version wrote it. Reads use this; new names use NameSchema.
+export const StoredNameSchema = z
     .string()
     .regex(NAME_PATTERN, 'name must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$')
     .refine((n) => !UUID_PATTERN.test(n), 'name must not be a uuid')
-    .refine((n) => !isReservedName(n), 'name must not be a Windows device name (con, nul, com1, ...)')
 
-// The sender label of a record and a notice: a display name or a uuid, nothing else (it is part of the
-// wake notice, which reaches `cmd.exe` on Windows, so it must never carry `%`, `!` or quotes).
-export const SenderLabelSchema = z.union([NameSchema, UuidSchema])
+// A NEW display name (tool input, rename, a claim): a stored name that is not a Windows device name.
+export const NameSchema = StoredNameSchema.refine(
+    (n) => !isReservedName(n),
+    'name must not be a Windows device name (con, nul, com1, ...)',
+)
+
+// The sender label of a record, an inbox file and a notice: a stored display name or a uuid, nothing
+// else (it is part of the wake notice, which reaches `cmd.exe` on Windows, so it must never carry `%`,
+// `!` or quotes).
+export const SenderLabelSchema = z.union([StoredNameSchema, UuidSchema])
+
+// Purpose: tell whether a string is a sender label (the one check: records, inbox file names, notices).
+export function isSenderLabel(label: string): boolean {
+    return SenderLabelSchema.safeParse(label).success
+}
 
 export const WakeSchema = z.discriminatedUnion('type', [
     z.object({ type: z.literal('signal'), path: z.string().min(1) }),
@@ -59,7 +74,7 @@ export type CwdSource = z.infer<typeof CwdSourceSchema>
 
 export const AgentRecordSchema = z.object({
     uuid: UuidSchema,
-    name: NameSchema.nullable(),
+    name: StoredNameSchema.nullable(),
     harness: HarnessSchema,
     hostKey: z.string().min(1),
     cwd: z.string(),

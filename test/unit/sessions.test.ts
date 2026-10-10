@@ -3,11 +3,12 @@
 // never takes the dead session's identity, and its timer never beats that key. Old session files of
 // ended sessions are cleaned up; a live session's file stays however old.
 import fs from 'node:fs'
+import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { CLEANUP_AGE_MS, sleep, STALE_MS } from '../../src/core/freshness.js'
 import { beat, beatTime } from '../../src/core/heartbeat.js'
-import { sessionFile } from '../../src/core/paths.js'
+import { sessionFile, sessionsDir } from '../../src/core/paths.js'
 import { cleanupSessions, SESSION_CLOCK_TOLERANCE_MS, writeSessionSync } from '../../src/core/sessions.js'
 import { join } from '../../src/flows/join.js'
 import { whoami } from '../../src/flows/query.js'
@@ -58,7 +59,11 @@ describe('session file trust', () => {
         writeSessionSync(root, 'claude', 102, 'S-live', new Date(Date.now() - day))
         await beat(root, 'claude-S-live', 'claude')
         writeSessionSync(root, 'omp', 103, 'S-young', new Date(Date.now() - 60_000))
+        writeSessionSync(root, 'omp', 104, 'S-future', new Date(Date.now() + day))
+        fs.writeFileSync(path.join(sessionsDir(root), 'notes.json'), '{}')
         await cleanupSessions(root)
+        expect(fs.existsSync(sessionFile(root, 'omp', 104))).toBe(false)
+        expect(fs.existsSync(path.join(sessionsDir(root), 'notes.json'))).toBe(true)
         expect(fs.existsSync(sessionFile(root, 'claude', 101))).toBe(false)
         expect(fs.existsSync(sessionFile(root, 'claude', 102))).toBe(true)
         expect(fs.existsSync(sessionFile(root, 'omp', 103))).toBe(true)

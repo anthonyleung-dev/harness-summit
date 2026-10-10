@@ -16,14 +16,21 @@ import { summitError } from '../core/errors.js'
 import { log } from '../core/log.js'
 import {
     applyMembersUpdate,
-    nameKey,
+    nameKeys,
     updateMembers,
     withName,
     withoutUuid,
     type MembersUpdate,
 } from '../core/members.js'
 import { pipe, step } from '../core/pipe.js'
-import { NameSchema, type AgentRecord, type Members, type Takeover, type TakeoverReason } from '../core/schemas.js'
+import {
+    isReservedName,
+    NameSchema,
+    type AgentRecord,
+    type Members,
+    type Takeover,
+    type TakeoverReason,
+} from '../core/schemas.js'
 import { hostKeyStep, need, requireHostStep, type CallContext, type WithHost } from './context.js'
 
 export interface RenameResult {
@@ -68,14 +75,28 @@ export function validateName(name: string): string {
     return parsed.data
 }
 
-// Purpose: the current holder of `name` when it is another agent whose folder is in this group.
-// Null when free (no entry, our own entry, or a leftover entry without a folder here, F6).
+// Purpose: the current holder of `name` when it is another agent whose folder is in this group, with
+// the map key it holds (which may differ in case). Null when free: our own exact entry, or no entry
+// ignoring case other than ours and leftovers without a folder here (F6). Every case match is judged: a
+// pair that an older version wrote (`Bob` and `bob`, two agents) is refused until one renames.
 async function nameHolder(root: string, groupKey: string, m: Members, name: string, uuid: string) {
-    const key = nameKey(m, name)
-    const owner = key === undefined ? undefined : m.members[key]
-    if (owner === undefined || owner === uuid) return null
-    const agent = await readAgent(root, groupKey, owner)
-    return agent === null ? null : { agent, groupKey }
+    if (m.members[name] === uuid) return null
+    const holders: { agent: AgentRecord; groupKey: string; key: string }[] = []
+    for (const key of nameKeys(m, name)) {
+        const owner = m.members[key] as string
+        if (owner === uuid) continue
+        const agent = await readAgent(root, groupKey, owner)
+        if (agent !== null) holders.push({ agent, groupKey, key })
+    }
+    if (holders.length > 1) {
+        throw summitError(
+            'SUMMIT_NAME_TAKEN',
+            `name ${name} is held by ${holders.length} agents in ${groupKey} in different letter case; one must rename first`,
+            'nameHolder',
+            { name, groupKey, keys: holders.map((h) => h.key) },
+        )
+    }
+    return holders[0] ?? null
 }
 
 // Purpose: drop every map entry whose uuid has no folder in this group (F6). Caller holds the lock.
@@ -97,7 +118,7 @@ export async function assertNameFree(
     name: string,
     uuid: string,
     force = false,
-): Promise<{ agent: AgentRecord; groupKey: string; reason: TakeoverReason } | null> {
+): Promise<{ agent: AgentRecord; groupKey: string; key: string; reason: TakeoverReason } | null> {
     const holder = await nameHolder(root, groupKey, m, name, uuid)
     if (holder === null) return null
     // Without force, any holder keeps the name: no second look is needed to refuse.
@@ -133,6 +154,14 @@ export function claimName(
     opts: ClaimOptions = {},
 ): MembersUpdate {
     return async (m) => {
+        // A claim chooses a name anew: a Windows device name is refused here too (an agent named so by an
+        // older version renames away first).
+        if (isReservedName(name)) {
+            throw summitError('SUMMIT_BAD_NAME', `name ${name} is a Windows device name; rename first`, 'claimName', {
+                name,
+                groupKey,
+            })
+        }
         const holder = await assertNameFree(root, groupKey, m, name, uuid, opts.force)
         if (holder !== null) {
             // Never creates a folder: the holder may have moved or left (updateAgent returns null).
@@ -141,7 +170,7 @@ export function claimName(
             )
             opts.onTakeover?.({ holder: holder.agent, reason: holder.reason })
         }
-        return withName(withoutUuid(await withoutLeftovers(root, groupKey, m), uuid), name, uuid)
+        return withName(withoutUuid(await withoutLeftovers(root, groupKey, m), uuid), name, uuid, holder?.key)
     }
 }
 

@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import harnessSummit, { parseArmed } from '../../adapters/pi-omp/harness-summit.js'
 import { sleep } from '../../src/core/freshness.js'
 import { buildNotice } from '../../src/core/notice.js'
+import { readSession, writeSessionSync } from '../../src/core/sessions.js'
 import { join } from '../../src/flows/join.js'
 import { whoami } from '../../src/flows/query.js'
 import { read } from '../../src/flows/read.js'
@@ -122,6 +123,18 @@ describe('pi/OMP extension', () => {
                 { triggerTurn: true, deliverAs: 'followUp' },
             ],
         ])
+    })
+
+    it('OMP renews its session file on every agent_start, so a restarted server trusts it again', async () => {
+        writeSessionSync(root, 'omp', process.pid, 'S-omp', new Date(Date.now() - 5 * 60 * 1000))
+        const fresh = () => readSession(root, 'omp', process.pid, { notBefore: Date.now() - 60_000 })
+        expect(await fresh()).toBeNull()
+        omp.handlers.agent_start!({}, ctxOf('S-omp'))
+        await until(async () => (await fresh()) === 'S-omp')
+        // pi keeps its session in the server env: its agent_start writes no session file.
+        pi.handlers.agent_start!({}, ctx)
+        await sleep(300)
+        expect(await readSession(root, 'pi', process.pid)).toBeNull()
     })
 
     it('validates the ext-arm output before it watches anything', () => {
