@@ -29,7 +29,12 @@ export interface HookEnv {
 }
 
 const SessionStartInput = z.looseObject({ session_id: z.string().optional(), source: z.string().optional() })
-const FileChangedInput = z.looseObject({ file_path: z.string().optional(), event: z.string().optional() })
+const FileChangedInput = z.looseObject({
+    session_id: z.string().optional(),
+    file_path: z.string().optional(),
+    event: z.string().optional(),
+})
+const PromptSubmitInput = z.looseObject({ session_id: z.string().optional() })
 
 // Purpose: parse hook stdin JSON leniently (bad input is logged and treated as empty).
 function parseStdin<S extends z.ZodType>(text: string, schema: S, fn: string): z.infer<S> {
@@ -98,11 +103,33 @@ export async function claudeSessionStart(stdin: string, he: HookEnv): Promise<Ho
     }
 }
 
+// Purpose: refresh the session file of this claude process from a hook's stdin `session_id` (the same
+// writer and content as SessionStart, with a new `at`), so a server that started after the last
+// SessionStart (a `/mcp` reconnect) trusts the file again (src/core/sessions.ts). Without a session id
+// in stdin nothing is written. Never throws: a failed refresh is logged and the hook goes on.
+async function refreshSession(he: HookEnv, sessionId: string | undefined, fn: string): Promise<void> {
+    if (sessionId === undefined || sessionId === '') return
+    await writeSession(he.root, 'claude', claudePid(he.env, he.ppid), sessionId).catch((err) =>
+        log('warn', fn, 'session refresh failed', { error: toSummitError(err, fn).toJSON() }),
+    )
+}
+
+// Purpose: UserPromptSubmit: refresh the session file (refreshSession) and print nothing (stdout of this
+// event becomes model context). One atomic file write, no network; always exit 0.
+export async function claudePromptSubmit(stdin: string, he: HookEnv): Promise<HookResult> {
+    const input = parseStdin(stdin, PromptSubmitInput, 'claudePromptSubmit')
+    await refreshSession(he, input.session_id, 'claudePromptSubmit')
+    log('debug', 'claudePromptSubmit', 'session refreshed', { hasSession: input.session_id !== undefined })
+    return { exitCode: 0 }
+}
+
 // Purpose: FileChanged (asyncRewake): exit 2 with the notice on stderr when the session this claude
 // process runs now has unread mail and the changed file is its signal, else exit 0. Never prints
 // watchPaths (that would replace the watch list).
 export async function claudeFileChanged(stdin: string, he: HookEnv): Promise<HookResult> {
     const input = parseStdin(stdin, FileChangedInput, 'claudeFileChanged')
+    // A wake also refreshes the session file, so a reconnected server works again from the next wake.
+    await refreshSession(he, input.session_id, 'claudeFileChanged')
     try {
         const sessionId = await readSession(he.root, 'claude', claudePid(he.env, he.ppid))
         if (sessionId === null) {

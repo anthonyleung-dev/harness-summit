@@ -178,6 +178,11 @@ describe('command templates', () => {
             args: ['C', 'hook', 'claude-session-start'],
             timeout: 20,
         })
+        expect(hooks.UserPromptSubmit).toEqual([
+            {
+                hooks: [{ type: 'command', command: 'N', args: ['C', 'hook', 'claude-prompt-submit'], timeout: 10 }],
+            },
+        ])
         expect(hooks.SessionStart[0].matcher).toBeUndefined()
         expect(JSON.stringify(hooks)).not.toMatch(/rewake(Message|Summary)/)
     })

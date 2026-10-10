@@ -13,12 +13,13 @@ import { devPluginLaunch, repoRoot } from '../install/launch.js'
 import { renderClaudePlugin } from '../install/render.js'
 import { runMcpServer } from '../server/server.js'
 import { logsToFile, parseCliArgs, parseHarness, parseHarnessList, parsePid, type CliArgs } from './args.js'
-import { claudeFileChanged, claudeSessionStart, extArm, type HookResult } from './hooks.js'
+import { claudeFileChanged, claudePromptSubmit, claudeSessionStart, extArm, type HookResult } from './hooks.js'
 
 const USAGE = `usage: harness-summit <command>
   mcp --harness <claude|codex|pi|omp|opencode>   run the MCP stdio server
   hook claude-session-start                      Claude Code SessionStart hook (stdin JSON)
   hook claude-file-changed                       Claude Code FileChanged hook (stdin JSON)
+  hook claude-prompt-submit                      Claude Code UserPromptSubmit hook (stdin JSON)
   hook ext-arm --harness <pi|omp> --session <id> [--pid <pid>]
                                                  record the session (omp) and arm its signal file
   notice --host-key <key>                        print the unread notice (empty when none)
@@ -56,6 +57,7 @@ async function runHook(args: CliArgs): Promise<void> {
     const he = { root: summitRoot(), env: process.env, ppid: process.ppid }
     if (args.sub === 'claude-session-start') return emit(await claudeSessionStart(await readStdin(), he))
     if (args.sub === 'claude-file-changed') return emit(await claudeFileChanged(await readStdin(), he))
+    if (args.sub === 'claude-prompt-submit') return emit(await claudePromptSubmit(await readStdin(), he))
     if (args.sub === 'ext-arm') {
         const harness = parseHarness(args.harness, 'runHook')
         if (harness !== 'pi' && harness !== 'omp')

@@ -7,13 +7,13 @@ import { beforeAll, describe, expect, it } from 'vitest'
 
 import { buildNotice } from '../../src/core/notice.js'
 import { signalPathFor } from '../../src/core/paths.js'
-import { readSession } from '../../src/core/sessions.js'
+import { readSession, writeSessionSync } from '../../src/core/sessions.js'
 import { join } from '../../src/flows/join.js'
 import { whoami } from '../../src/flows/query.js'
 import { read } from '../../src/flows/read.js'
 import { rename } from '../../src/flows/rename.js'
 import { send } from '../../src/flows/send.js'
-import { callFor, runCli, tmpRoot } from '../helpers/env.js'
+import { callFor, errorCode, runCli, tmpRoot } from '../helpers/env.js'
 
 // The hook's parent: runCli starts the CLI straight from this test process, as claude starts an
 // exec-form hook (no shell), so this process plays the claude process.
@@ -31,9 +31,10 @@ const sessionStartInput = (source: string, sessionId = SID) =>
         source,
         model: 'claude-opus-5-5',
     })
-const fileChangedInput = (filePath: string, event = 'change') =>
+// FileChanged stdin carries the session the claude process runs NOW (common input field `session_id`).
+const fileChangedInput = (filePath: string, event = 'change', sessionId = SID) =>
     JSON.stringify({
-        session_id: '1bf60fec-35ac-496b-9fc6-915711f7e85f',
+        session_id: sessionId,
         transcript_path: '/home/x/.claude/projects/p/1bf60fec-35ac-496b-9fc6-915711f7e85f.jsonl',
         cwd: '/tmp/proj',
         hook_event_name: 'FileChanged',
@@ -146,8 +147,52 @@ describe('claude hooks', () => {
         // The same claude process (same pid) now runs session S-cleared: its server sees a new host key.
         expect(await whoami(receiver)).toEqual({ joined: false, hostKey: 'claude-S-cleared' })
         expect((await runCli(['notice', '--host-key', `claude-${SID}`], { env })).stdout).toBe(notice + '\n')
-        // FileChanged on the old session's signal is not ours any more.
-        const old = await runCli(['hook', 'claude-file-changed'], { env, stdin: fileChangedInput(signal) })
+        // FileChanged on the old session's signal (claude now runs S-cleared) is not ours any more.
+        const old = await runCli(['hook', 'claude-file-changed'], {
+            env,
+            stdin: fileChangedInput(signal, 'change', 'S-cleared'),
+        })
         expect(old).toEqual({ code: 0, stdout: '', stderr: '' })
+    })
+})
+
+describe('session refresh by UserPromptSubmit and FileChanged (a server reconnected with /mcp)', () => {
+    const root = tmpRoot()
+    const env = { HARNESS_SUMMIT_HOME: root, CLAUDE_PID: '' }
+    const sid = 'S-reconnect'
+    // The server was reconnected now; SessionStart wrote the session file two minutes ago.
+    const reconnected = () => ({ ...callFor(root, 'claude', { hostPid: CLAUDE_PID, session: sid }) })
+    const sessionStartedLongAgo = () =>
+        writeSessionSync(root, 'claude', CLAUDE_PID, sid, new Date(Date.now() - 2 * 60 * 1000))
+
+    it('the reconnected server distrusts the old file, and trusts it after the next prompt', async () => {
+        const call = reconnected()
+        sessionStartedLongAgo()
+        expect(await errorCode(whoami(call))).toBe('SUMMIT_NO_HOST_KEY')
+        const r = await runCli(['hook', 'claude-prompt-submit'], {
+            env,
+            stdin: JSON.stringify({ session_id: sid, hook_event_name: 'UserPromptSubmit', prompt: 'hi' }),
+        })
+        // Prints nothing: stdout of UserPromptSubmit would become model context.
+        expect(r).toEqual({ code: 0, stdout: '', stderr: '' })
+        expect(await whoami(call)).toEqual({ joined: false, hostKey: `claude-${sid}` })
+    })
+
+    it('a wake (FileChanged) refreshes it too; an event without session_id writes nothing', async () => {
+        const call = reconnected()
+        sessionStartedLongAgo()
+        const noId = await runCli(['hook', 'claude-prompt-submit'], { env, stdin: '{"prompt":"hi"}' })
+        expect(noId).toEqual({ code: 0, stdout: '', stderr: '' })
+        expect(await errorCode(whoami(call))).toBe('SUMMIT_NO_HOST_KEY')
+        const wake = await runCli(['hook', 'claude-file-changed'], {
+            env,
+            stdin: JSON.stringify({
+                session_id: sid,
+                file_path: signalPathFor(root, `claude-${sid}`),
+                event: 'change',
+            }),
+        })
+        expect(wake.code).toBe(0)
+        expect(await whoami(call)).toEqual({ joined: false, hostKey: `claude-${sid}` })
     })
 })

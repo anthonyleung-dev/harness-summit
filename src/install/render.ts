@@ -109,6 +109,8 @@ export function renderClaudePlugin(launch: Launch): RenderedFile[] {
     const hooks = {
         hooks: {
             SessionStart: [{ hooks: [{ ...hookCommand(launch, 'claude-session-start'), timeout: 20 }] }],
+            // Refreshes the session file on every prompt (a reconnected server trusts it again).
+            UserPromptSubmit: [{ hooks: [{ ...hookCommand(launch, 'claude-prompt-submit'), timeout: 10 }] }],
             FileChanged: [
                 {
                     hooks: [
