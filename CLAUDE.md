@@ -44,8 +44,8 @@ npm run dev -- <args>   # run the CLI from source with tsx
       (`src/core/sessions.ts`; pid = the hook's ppid, `$CLAUDE_PID` only confirms); the server reads it
       via its parent pid on EVERY call and trusts it only when written after its own start minus 30 s
       (a reused pid must not adopt a dead session's file). UserPromptSubmit refreshes the file from its
-      stdin `session_id` (same writer), so a `/mcp` reconnect recovers on the next prompt; FileChanged only
-      renews `at` when its stdin id is the recorded one (it must never switch the session).
+      stdin `session_id` (same writer), so a `/mcp` reconnect recovers on the next prompt; FileChanged and
+      the OMP `ext-session` only renew (`renewSession`: never switch the session).
     - OMP renews its session file on `agent_start` too (`hook ext-session`).
     - pi: `pi-<sessionId>` from env `SUMMIT_SESSION_ID`: the extension calls `registerMcpServer` on every
       `session_start`. Install writes NO pi mcp.json entry (a same-name entry would win) and retires an
@@ -64,15 +64,15 @@ npm run dev -- <args>   # run the CLI from source with tsx
   on every call (`beatCaller` in `src/flows/context.ts`): claude/omp the current session from the
   session file each tick, pi its env session, codex every thread a call registered, opencode none.
   `alive` = beat fresh (`isStaleMtime` in `src/core/freshness.ts`: ≤ 10 s in the past or future) →
-  true, stale or missing → false, OpenCode always "unknown". A "gone" decision (forced takeover, lock break) takes the second look (`confirmGone`, 2.5 s;
-  any mtime change = alive). A name takeover needs `force` for every holder that is not alive now.
+  true, stale or missing → false, OpenCode always "unknown". A "gone" decision (forced takeover, lock
+  break) takes the second look (`confirmGone`, 2.5 s; any mtime change = alive). A name takeover needs `force` for every holder that is not alive now.
   `agent.json.pid` is informational. Every write of an existing `agent.json` goes through
   `updateAgent` (`src/core/agents.ts`). `summit_group` holds the new group's `members.lock` from the
   name claim until the folder has moved, so a map entry whose uuid has no folder in that group is
   always a leftover: it is free and every claim drops it. The same hold covers the old group's lock
   (`lockGroups`, sorted key order), and the move re-reads `agent.json` under it, so a parallel
   rename never leaves `agent.json` and the new map with different names. Undoing a claim (failed move,
-  or a rename whose folder left) goes through `restoreHolder` in `src/flows/rename.ts`.
+  or a rename whose folder left) goes through `restoreHolder` in `src/flows/claim.ts`.
 - A lock is a lease (owner line `<token> <ISO time>`): `withLock` refreshes the lock's mtime every 2 s
   while it holds it, for at most `LOCK_MAX_HOLD_MS` = 60 s (`src/core/lease.ts`); stale = not refreshed
   for 10 s and confirmed by the second look, or a token this process abandoned. Breakers are
@@ -118,35 +118,39 @@ npm run dev -- <args>   # run the CLI from source with tsx
 Before you write anything, search for an existing helper and extend it with a parameter. Each of
 these has exactly one implementation:
 
-| What                | Where                                                            |
-| ------------------- | ---------------------------------------------------------------- |
-| Notice text         | `src/core/notice.ts`                                             |
-| Signal protocol     | `src/core/signal.ts`, with the path in `src/core/paths.ts`       |
-| Host-key resolution | `src/core/hostKey.ts`                                            |
-| Wake argv           | `src/core/wake.ts`                                               |
-| External CLI spawns | `src/core/exec.ts` (`spawnPlan`, `cliBin`, `findOnPath`)         |
-| cmd.exe quoting     | `src/core/winCmd.ts`                                             |
-| Lock files          | `src/core/lock.ts` (`withLock`, `formatLockOwner`, `isTaken`)    |
-| Freshness, sleep    | `src/core/freshness.ts` (`isStaleMtime`, `confirmGone`, `sleep`) |
-| Busy errno (Win)    | `isBusyErrno` in `src/core/fsx.ts`                               |
-| Name case, devices  | `nameKey` in `members.ts`, `isReservedName` in `schemas.ts`      |
-| File modes          | `DIR_MODE`, `FILE_MODE` in `src/core/paths.ts`                   |
-| Lock lease refresh  | `src/core/lease.ts`                                              |
-| Rename (retrying)   | `renameRetry` in `src/core/fsx.ts`                               |
-| agent.json update   | `updateAgent` in `src/core/agents.ts`                            |
-| Group lock          | `lockGroup` (`lockGroups` for several) in `src/core/members.ts`  |
-| Claim undo          | `restoreHolder` in `src/flows/rename.ts`                         |
-| Heartbeat           | `src/core/heartbeat.ts`, `isAlive` in `src/core/agents.ts`       |
-| Project root key    | `normalizeRootPath` in `src/core/project.ts`                     |
-| Session harnesses   | `SIGNAL_HARNESSES`, `SESSION_FILE_HARNESSES` in `hostKey.ts`     |
-| Session files       | `src/core/sessions.ts` (`writeSession(Sync)`, `readSession`)     |
-| Host key format     | `joinHostKey` in `src/core/hostKey.ts`                           |
-| File read/write     | `src/core/fsx.ts` (`readTextFile`, `pathExists`, JSON)           |
-| CLI arguments       | `src/cli/args.ts`                                                |
-| Product name        | `SUMMIT_NAME` in `src/core/schemas.ts`                           |
-| Uuid / name schema  | `UuidSchema`, `NameSchema` in `src/core/schemas.ts`              |
-| Command bodies      | `src/install/templates.ts`                                       |
-| Test helpers        | `test/helpers/` (`env.ts`, `state.ts`, `mcp.ts`)                 |
+| What                | Where                                                              |
+| ------------------- | ------------------------------------------------------------------ |
+| Notice text         | `src/core/notice.ts`                                               |
+| Signal protocol     | `src/core/signal.ts`, with the path in `src/core/paths.ts`         |
+| Host-key resolution | `src/core/hostKey.ts`                                              |
+| Wake argv           | `src/core/wake.ts`                                                 |
+| External CLI spawns | `src/core/exec.ts` (`spawnPlan`, `cliBin`, `findOnPath`)           |
+| cmd.exe quoting     | `src/core/winCmd.ts`                                               |
+| Lock files          | `src/core/lock.ts` (`withLock`, `formatLockOwner`, `isTaken`)      |
+| Freshness, sleep    | `src/core/freshness.ts` (`isStaleMtime`, `confirmGone`, `sleep`)   |
+| Busy errno (Win)    | `isBusyErrno` in `src/core/fsx.ts`                                 |
+| Name lookup         | `lookupName` in `src/core/members.ts` (exact, else one case match) |
+| Name claims, undo   | `src/flows/claim.ts` (`claimName`, `restoreHolder`, `nameKeys`)    |
+| Device names        | `isReservedName` in `schemas.ts`, `inboxLabel` in `agents.ts`      |
+| Stored vs new names | `StoredNameSchema`, `NameSchema`, `isSenderLabel` in `schemas.ts`  |
+| Same file path      | `samePath` in `src/core/project.ts`                                |
+| Session renew       | `renewSession` in `src/core/sessions.ts` (never switches)          |
+| File modes          | `DIR_MODE`, `FILE_MODE` in `src/core/paths.ts`                     |
+| Lock lease refresh  | `src/core/lease.ts`                                                |
+| Rename (retrying)   | `renameRetry` in `src/core/fsx.ts`                                 |
+| agent.json update   | `updateAgent` in `src/core/agents.ts`                              |
+| Group lock          | `lockGroup` (`lockGroups` for several) in `src/core/members.ts`    |
+| Heartbeat           | `src/core/heartbeat.ts`, `isAlive` in `src/core/agents.ts`         |
+| Project root key    | `normalizeRootPath` in `src/core/project.ts`                       |
+| Session harnesses   | `SIGNAL_HARNESSES`, `SESSION_FILE_HARNESSES` in `hostKey.ts`       |
+| Session files       | `src/core/sessions.ts` (`writeSession(Sync)`, `readSession`)       |
+| Host key format     | `joinHostKey` in `src/core/hostKey.ts`                             |
+| File read/write     | `src/core/fsx.ts` (`readTextFile`, `pathExists`, JSON)             |
+| CLI arguments       | `src/cli/args.ts`                                                  |
+| Product name        | `SUMMIT_NAME` in `src/core/schemas.ts`                             |
+| Uuid / name schema  | `UuidSchema`, `NameSchema` in `src/core/schemas.ts`                |
+| Command bodies      | `src/install/templates.ts`                                         |
+| Test helpers        | `test/helpers/` (`env.ts`, `state.ts`, `mcp.ts`)                   |
 
 The pi/OMP extension is a separate door, and this is the written reason: the installed copy lives
 alone in the harness's extension dir. So it gets the host key, the signal path and the notice from

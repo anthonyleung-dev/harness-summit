@@ -87,12 +87,12 @@ Rules:
   (`SUMMIT_NO_HOST_KEY`, "hooks did not run"), and the server's timer never beats its key.
 - Claude refreshes its session file on more than SessionStart: the `UserPromptSubmit` hook rewrites it
   with the `session_id` from its stdin (a common input field of every hook event, Claude Code hooks
-  docs) through the same writer, with a new `at`; every `FileChanged` (wake) hook renews `at` only when
-  its stdin `session_id` equals the recorded one (a wake hook that started before a `/clear` and ends
-  after it must never switch the session back). Only SessionStart and UserPromptSubmit change the id. So a server
-  reconnected by hand (`/mcp`) long after SessionStart works again from the user's next prompt or the
-  next wake. A hook input without `session_id` writes nothing. The UserPromptSubmit hook does one file
-  write, prints nothing (its stdout would become model context) and always exits 0.
+  docs) through the same writer, with a new `at`; every `FileChanged` (wake) hook renews `at` without ever switching the session (`renewSession` in
+  `src/core/sessions.ts`, the one renew rule: it writes only when the recorded id is its stdin
+  `session_id`, or when no file exists; a wake hook that started before a `/clear` and ends after it
+  never puts the old session back). Only SessionStart and UserPromptSubmit change the id. Residual race:
+  two writers inside the few ms between the renew's read and its write; the next SessionStart or prompt
+  corrects it.
 - A server that starts deletes session files older than 24 h whose session no server beats (a live
   claude may run one session for days; its file stays).
 - The Claude hook keys the session file by its parent pid: exec-form hooks are spawned by claude
@@ -114,7 +114,7 @@ Rules:
 - Upgrade note: older versions keyed claude, pi and omp by the host pid (`claude-<pid>`). Those records
   and agent folders stay on disk and nothing reads them again; a session joins anew after the upgrade.
 - Known limit: OMP records its session only in an interactive session (`ctx.hasUI`): on `session_start`,
-  `session_switch` and every `agent_start` (the last one renews `at` through `hook ext-session`, so an
+  `session_switch` and every `agent_start` (the last one renews `at` through `hook ext-session` with `renewSession`, never switching the session, so an
   OMP-restarted server trusts the file again from the next turn). An OMP run without a UI gets
   `SUMMIT_NO_HOST_KEY` (a session file left by an earlier OMP process with the same pid is older than
   the new server and is not trusted).
@@ -178,7 +178,8 @@ temp dir and never touch the real root.
   `namedGroupKey`); names and mail written by older versions stay readable (`StoredNameSchema`,
   `isSenderLabel`), and such an agent renames away before it can claim its name elsewhere.
 - At start, a server sets the root to 0700 once (a root created 0755 by an older version then blocks
-  traversal); quiet where the OS has no POSIX modes or the root does not exist yet.
+  traversal); quiet where the OS has no POSIX modes or the root does not exist yet; a symlinked root is
+  left as it is (chmod would change its target) with a warn, and EPERM/EACCES are logged at warn.
 - Modes: the summit root and every folder in it are created 0700, every file 0600 (`DIR_MODE`,
   `FILE_MODE` in `src/core/paths.ts`), where the OS supports modes (Windows keeps only the write bit).
 - `summit_group <name> [force]` MOVES the agent, in this order: claim the name in the new group's map
@@ -196,7 +197,9 @@ temp dir and never touch the real root.
   the next call (section 3). The result carries `takeover` as `summit_rename` does (section 5).
 - `<sender>.md` files: only names of the form `<name>.md` or `<uuid>.md` are inboxes. Any other
   file in the folder is never parsed.
-- `<sender>` in a file name is the sender's display name if it has one, else its uuid.
+- `<sender>` in a file name is the sender's display name if it has one, else its uuid (`inboxLabel`). On
+  Windows a sender whose name an older version allowed but that is a device name (`aux`) uses its uuid
+  (`aux.md` would be the AUX device); its records still name it `aux`.
 - `agent.json.pid`: the host pid for Claude Code, pi and OMP; the MCP server's own `process.pid` for
   Codex; `null` for OpenCode, as of the last `summit_join`. It is informational only: liveness comes
   from the heartbeat of the host key (section 7). The field stays because servers before the heartbeat require it. Records
@@ -205,7 +208,9 @@ temp dir and never touch the real root.
 ## 5. Messages
 
 - `summit_send({ to, message, replyTo? })`. `to` is `@name`, `name`, or a uuid. Names resolve through
-  the current group's `members.json`. Unknown target → `SUMMIT_UNKNOWN_TARGET`. Target folder missing →
+  the current group's `members.json`. Unknown target → `SUMMIT_UNKNOWN_TARGET`. A name that matches no key exactly and several keys only by
+  letter case (a pair an older version wrote) → `SUMMIT_AMBIGUOUS_TARGET`, naming the candidates
+  (`lookupName`, the one lookup door: exact key, else the only case match). Target folder missing →
   `SUMMIT_TARGET_GONE`. Sending to yourself → `SUMMIT_SELF_SEND`.
 - `body` is an alias of `message`: `summit_send({ to, body, replyTo? })` sends the same record, because
   a model that just read `body` in `summit_read` mirrors that field (OMP, 2026-10-10). Exactly one of
@@ -296,8 +301,11 @@ replyTo: <message id>      # only on replies
   name: each name is an inbox file name, and macOS and Windows file systems ignore case by default;
   `nameKeys` in `src/core/members.ts`). A lookup (`@name`) takes the exact key first, else a case match.
   A claim judges every case match: our own exact entry is free; one other holder is judged as below and
-  only its entry is replaced; several (a case pair an older version wrote) refuse the claim until one of
-  them renames. Otherwise rename fails with
+  only its entry is replaced; several (a case pair an older version wrote) are taken over together only
+  with `force` and only when every one of them is `alive: false` after the second look (any holder that
+  is alive or unknown keeps the pair); every one of them loses its entry and its `agent.json.name`, and
+  an undo gives every one back (`restoreHolder`). The result's `takeover` names the first; all are
+  logged (`src/flows/claim.ts`).
   `SUMMIT_NAME_TAKEN` while the name maps to a different uuid whose folder exists in this group: always when the holder is `alive: true`, and without
   `force` for every other holder (`alive: false`: no server beat it for 10 s, or its heartbeat is gone;
   `"unknown"`: OpenCode), because its session may resume later and expect its name. With `force: true`
