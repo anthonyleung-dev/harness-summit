@@ -1,6 +1,8 @@
 // The eight MCP tools (SPEC §2): Zod input and output schemas plus the flow each one runs.
 import { z } from 'zod'
 
+import { summitError } from '../core/errors.js'
+import { log } from '../core/log.js'
 import { CorruptSpanSchema, NameSchema, TakeoverSchema, UuidSchema } from '../core/schemas.js'
 import { bye } from '../flows/bye.js'
 import type { CallContext } from '../flows/context.js'
@@ -9,7 +11,7 @@ import { join } from '../flows/join.js'
 import { members, whoami } from '../flows/query.js'
 import { read } from '../flows/read.js'
 import { rename } from '../flows/rename.js'
-import { send } from '../flows/send.js'
+import { send, type SendInput as FlowSendInput } from '../flows/send.js'
 
 export interface ToolDef<I extends z.ZodObject, O extends z.ZodObject> {
     name: string
@@ -48,11 +50,36 @@ export const JoinOutput = z.object({
     guidance: z.string(),
 })
 
+// The published input of summit_send. `body` is an alias of `message`, because a model that just read
+// `body` in summit_read mirrors it. Neither is `required` in the JSON schema: harnesses (OMP) check
+// that schema on the client, so a required `message` would reject `{ to, body }` before the server
+// sees it. toSendInput enforces "exactly one, non-empty" instead.
 export const SendInput = z.object({
     to: z.string().min(1).describe('Receiver: @name, name, or uuid'),
-    message: z.string().min(1).describe('Message text'),
+    message: z.string().optional().describe('Message text. Give exactly one of message or body'),
+    body: z.string().optional().describe('Alias of message. Give exactly one of message or body'),
     replyTo: UuidSchema.optional().describe('Id of the message this answers'),
 })
+
+// Purpose: normalize the summit_send input to the flow DTO (`message` only), so the flow never sees
+// `body`. Exactly one of message and body, non-empty, else SUMMIT_BAD_INPUT naming both fields.
+export function toSendInput(input: z.infer<typeof SendInput>): FlowSendInput {
+    const given = [input.message, input.body].filter((v) => v !== undefined)
+    const text = given[0]
+    if (given.length !== 1 || text === undefined || text.length === 0) {
+        log('info', 'toSendInput', 'bad message/body', {
+            message: input.message !== undefined,
+            body: input.body !== undefined,
+        })
+        throw summitError(
+            'SUMMIT_BAD_INPUT',
+            'summit_send needs exactly one of message or body, and it must not be empty',
+            'toSendInput',
+            { to: input.to, message: input.message, body: input.body },
+        )
+    }
+    return { to: input.to, message: text, ...(input.replyTo !== undefined ? { replyTo: input.replyTo } : {}) }
+}
 
 export const SendOutput = z.object({
     id: UuidSchema,
@@ -163,7 +190,7 @@ export const TOOLS = [
         description: 'Send a message to another agent of this group. The receiver is woken to read it.',
         input: SendInput,
         output: SendOutput,
-        run: (call, input) => send(call, input),
+        run: (call, input) => send(call, toSendInput(input)),
     }),
     defineTool({
         name: 'summit_read',

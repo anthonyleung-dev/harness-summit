@@ -6,7 +6,7 @@
 import { withLock } from '../core/lock.js'
 import { log } from '../core/log.js'
 import { scanUnread, writeCursor, type UnreadScan } from '../core/mailbox.js'
-import { SUMMIT_GUIDANCE } from '../core/notice.js'
+import { replyCall, SUMMIT_GUIDANCE } from '../core/notice.js'
 import { cursorLock, mailboxOf } from '../core/paths.js'
 import { pipe, step } from '../core/pipe.js'
 import type { CorruptSpan } from '../core/schemas.js'
@@ -38,7 +38,7 @@ interface ReadCtx extends WithHost {
 // reply is addressed by the sender's uuid, which never changes hands; the name is there for the
 // reader (REVIEW m9).
 export function replyHint(fromId: string, from: string, id: string): string {
-    return `When the task is done, reply with summit_send to ${fromId} (${from}) with replyTo=${id}.`
+    return `When the task is done, reply to ${from} with ${replyCall(fromId, id)}.`
 }
 
 // Step: collect the unread records.

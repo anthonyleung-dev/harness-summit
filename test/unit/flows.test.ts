@@ -97,7 +97,7 @@ describe('flows', () => {
         expect(r.guidance).toBe(SUMMIT_GUIDANCE)
         expect(r.messages[0]).toMatchObject({ from: ja.uuid, body: 'from uuid' })
         expect(r.messages[0]?.replyHint).toBe(
-            `When the task is done, reply with summit_send to ${ja.uuid} (${ja.uuid}) with replyTo=${sent.id}.`,
+            `When the task is done, reply to ${ja.uuid} with summit_send({ to: "${ja.uuid}", replyTo: "${sent.id}", message: "<your answer>" }).`,
         )
         expect(fs.existsSync(ja.folder)).toBe(false)
     })
@@ -109,7 +109,7 @@ describe('flows', () => {
         const jb = await join(b)
         const ask = await send(a, { to: jb.uuid, message: 'please do X' })
         const asked = (await read(b)).messages[0]
-        expect(asked?.replyHint).toContain(`replyTo=${ask.id}`)
+        expect(asked?.replyHint).toContain(`replyTo: "${ask.id}"`)
         await send(b, { to: ja.uuid, message: 'did X', replyTo: ask.id })
         const r = await read(a)
         expect(r.messages[0]).toMatchObject({ replyTo: ask.id, body: 'did X' })
