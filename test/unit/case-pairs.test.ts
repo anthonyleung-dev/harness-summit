@@ -37,7 +37,11 @@ describe('case pairs written by older versions', () => {
     it('a lookup without the exact key and with several case matches is ambiguous and names them', async () => {
         const { z } = await pair()
         const err = await send(z, { to: '@BOB', message: 'who?' }).catch((e: { code: string; message: string }) => e)
-        expect(err).toMatchObject({ code: 'SUMMIT_AMBIGUOUS_TARGET', message: expect.stringContaining('Bob, bob') })
+        expect(err).toMatchObject({
+            code: 'SUMMIT_AMBIGUOUS_TARGET',
+            message:
+                'BOB matches 2 agents (Bob, bob). Send to one exact name, or to its uuid (see /sl). An agent can rename itself with /sr to clear the clash.',
+        })
     })
 
     it('a forced claim takes the pair over when every holder is gone, and only then', async () => {
@@ -65,6 +69,19 @@ describe('case pairs written by older versions', () => {
         expect(await errorCode(rename(z, 'bob', true))).toBe('SUMMIT_NAME_TAKEN')
     })
 
+    it('a forced group move into a group whose pair is all gone takes both entries over', async () => {
+        const { z, jx, jy } = await pair('g-move')
+        ageBeat(root, jx.hostKey, STALE_MS * 3)
+        ageBeat(root, jy.hostKey, STALE_MS * 3)
+        await rename(z, 'BOB')
+        expect(await errorCode(group(z, 'g-move'))).toBe('SUMMIT_NAME_TAKEN')
+        const moved = await group(z, 'g-move', true)
+        expect(moved).toMatchObject({ moved: true, name: 'BOB', takeover: { reason: 'holder-gone' } })
+        expect(mapOf(root, 'g-move')).toEqual({ BOB: moved.uuid })
+        expect(agentJson(agentDir(root, 'g-move', jx.uuid)).name).toBeNull()
+        expect(agentJson(agentDir(root, 'g-move', jy.uuid)).name).toBeNull()
+    })
+
     it('a failed group move into a pair gives BOTH holders their names back', async () => {
         const { z, jx, jy, jz } = await pair('g-pair')
         ageBeat(root, jx.hostKey, STALE_MS * 3)
@@ -79,6 +96,8 @@ describe('case pairs written by older versions', () => {
     })
 })
 
+// The send path picks the inbox name with the process platform (src/flows/send.ts), so its win32 branch
+// runs for real only on the Windows CI legs; here inboxLabel is checked for both platforms.
 describe('inbox file name of a device-named sender', () => {
     it('on Windows a sender named aux (written by an older version) gets its uuid as the inbox name', () => {
         const uuid = '11111111-1111-4111-8111-111111111111'

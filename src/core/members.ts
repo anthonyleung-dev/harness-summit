@@ -86,7 +86,7 @@ export function lookupName(m: Members, name: string): string | undefined {
     if (keys[0] === name || keys.length <= 1) return keys[0]
     throw summitError(
         'SUMMIT_AMBIGUOUS_TARGET',
-        `${name} matches ${keys.join(', ')}; use the exact name or the uuid`,
+        `${name} matches ${keys.length} agents (${keys.join(', ')}). Send to one exact name, or to its uuid (see /sl). An agent can rename itself with /sr to clear the clash.`,
         'lookupName',
         {
             name,

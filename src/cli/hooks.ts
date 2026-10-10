@@ -100,8 +100,8 @@ export async function claudeSessionStart(stdin: string, he: HookEnv): Promise<Ho
 // Purpose: refresh the session file of this claude process from a hook's stdin `session_id` (the same
 // writer and content as SessionStart, with a new `at`), so a server that started after the last
 // SessionStart (a `/mcp` reconnect) trusts the file again (src/core/sessions.ts). Without a session id
-// in stdin nothing is written. With `sameIdOnly` (FileChanged) it only renews the recorded session and
-// never switches it: a wake hook that started before a `/clear` and finishes after it must not put the
+// in stdin nothing is written. With `sameIdOnly` (FileChanged) it renews the recorded session, or writes
+// one when none is recorded, and never switches it (renewSession): a wake hook that started before a `/clear` and finishes after it must not put the
 // old session back. Only SessionStart and UserPromptSubmit change the id. Never throws: a failed refresh
 // is logged and the hook goes on.
 async function refreshSession(
@@ -162,7 +162,8 @@ export async function claudeFileChanged(stdin: string, he: HookEnv): Promise<Hoo
 // Purpose: `hook ext-session`: the OMP extension renews its session file on every agent start (same
 // writer), so a server that OMP restarted later trusts it again from the next turn. Prints nothing.
 export async function extSession(sessionId: string, pid: number, root: string): Promise<HookResult> {
-    // Renew only (renewSession): a slow spawn that ends after an OMP `/new` must not put the old id back.
+    // renewSession: renews, or writes when none is recorded; never switches, so a slow spawn that ends
+    // after an OMP `/new` cannot put the old id back.
     await renewSession(root, 'omp', pid, sessionId)
     return { exitCode: 0 }
 }

@@ -70,8 +70,9 @@ export async function switchSession(
     return previous
 }
 
-// Purpose: renew the `at` of the session that host process `pid` runs, without ever switching it: write
-// only when the recorded id is `sessionId`, or when no file exists (nothing to switch from). Used by the
+// Purpose: renew the session that host process `pid` runs, or write it when none is recorded; never
+// switch it: write only when the recorded id is `sessionId`, or when no file exists (nothing to switch
+// from). Used by the
 // hooks that may run late (a Claude FileChanged wake, the OMP agent_start renew): one that started
 // before a `/clear` or `/new` and ends after it must not put the old session back. Residual race: two
 // writers inside the few ms between this read and the write; the next SessionStart or prompt corrects

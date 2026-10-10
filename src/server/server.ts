@@ -144,6 +144,9 @@ function installExitHandlers(harness: Harness, stopHeartbeat: () => void): void 
     process.stdin.once('end', () => exit('stdin end'))
 }
 
+// A symlinked root is reported once per process.
+let symlinkWarned = false
+
 // Purpose: set the summit root to DIR_MODE once at start, so a root that an older version created 0755
 // blocks traversal by other users (files it created keep their old modes; new ones are 0600). Quiet where
 // the OS has no POSIX modes (Windows) or the root does not exist yet (created 0700 on first write).
@@ -152,7 +155,10 @@ export async function restrictRoot(root: string, platform: NodeJS.Platform = pro
     try {
         // A symlinked root is the user's own setup: chmod would change the target, so leave it alone.
         if ((await fs.lstat(root)).isSymbolicLink()) {
-            log('warn', 'restrictRoot', 'summit root is a symlink; its mode is left as it is', { root })
+            // Once per process: a test or a host may start several servers in one process.
+            if (!symlinkWarned)
+                log('warn', 'restrictRoot', 'summit root is a symlink; its mode is left as it is', { root })
+            symlinkWarned = true
             return
         }
         await fs.chmod(root, DIR_MODE)

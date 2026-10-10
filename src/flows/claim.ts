@@ -9,8 +9,8 @@
 // name becomes null, so it can never write a second `<name>.md` next to the new holder. The result says
 // why a name was taken over (`takeover.reason`, O1).
 //
-// Every case match is judged (`nameKeys`): our own exact entry is free; one other holder follows the
-// rules above; several (a case pair an older version wrote, `Bob` and `bob`) are taken over together
+// Every case match is judged (`nameKeys`), also when our own entry holds the exact key: one other holder
+// follows the rules above; several (a case pair an older version wrote, `Bob` and `bob`) are taken over together
 // only with `force` and only when EVERY one of them is gone (`alive: false` after the second look); any
 // holder that is alive or unknown keeps the pair. A map entry whose uuid has no folder in THAT group is
 // free, and every claim drops such entries (F6): a group move holds the new group's lock from its claim
@@ -50,9 +50,9 @@ export function takeoverOf(taken: TakenOver[] | undefined): Takeover | null {
 }
 
 // Purpose: every other agent whose folder is in this group and that holds `name` ignoring case, with the
-// key it holds. Empty when free: our own exact entry, or only our entries and leftovers (F6).
+// key it holds. Empty when free: only our own entries and leftovers (F6). Our own exact entry does not end
+// the search: a legacy pair {Bob: us, bob: X} is judged too, so a claim never leaves a pair behind.
 async function nameHolders(root: string, groupKey: string, m: Members, name: string, uuid: string): Promise<Holder[]> {
-    if (m.members[name] === uuid) return []
     const holders: Holder[] = []
     for (const key of nameKeys(m, name)) {
         const owner = m.members[key] as string

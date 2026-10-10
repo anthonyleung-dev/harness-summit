@@ -5,6 +5,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
 
+import { STALE_MS } from '../../src/core/freshness.js'
 import { namedGroupKey } from '../../src/core/project.js'
 import { formatRecord } from '../../src/core/records.js'
 import { isReservedName, NameSchema } from '../../src/core/schemas.js'
@@ -15,7 +16,7 @@ import { read } from '../../src/flows/read.js'
 import { rename } from '../../src/flows/rename.js'
 import { send } from '../../src/flows/send.js'
 import { callFor, errorCode, sampleRecord, tmpRoot } from '../helpers/env.js'
-import { mapOf, patchAgentJson, writeMap } from '../helpers/state.js'
+import { ageBeat, mapOf, patchAgentJson, writeMap } from '../helpers/state.js'
 
 describe('Windows device names', () => {
     it('are refused as new names and group names, in any letter case', () => {
@@ -76,18 +77,42 @@ describe('maps and data written by older versions', () => {
         return { a, b, ja, jb, g: ja.groupKey }
     }
 
-    it('a case pair {Bob: X, bob: Y}: @bob reaches Y, Y keeps its own exact name, a third agent is refused', async () => {
+    it('a case pair {Bob: X, bob: Y}: @bob reaches Y, Y cannot re-claim bob while X lives, a third agent is refused', async () => {
         const { a, b, ja, jb, g } = await twoAgents()
         writeMap(root, g, { Bob: ja.uuid, bob: jb.uuid })
         expect((await send(a, { to: '@bob', message: 'to Y' })).to.uuid).toBe(jb.uuid)
         expect((await send(b, { to: '@Bob', message: 'to X' })).to.uuid).toBe(ja.uuid)
-        expect(await rename(b, 'bob')).toMatchObject({ name: 'bob', takeover: null })
+        // Y's own exact entry does not end the judging: X (alive) holds the name too.
+        expect(await errorCode(rename(b, 'bob'))).toBe('SUMMIT_NAME_TAKEN')
         expect(mapOf(root, g)).toEqual({ Bob: ja.uuid, bob: jb.uuid })
         const z = callFor(root, 'claude')
         await join(z)
         const err = await rename(z, 'BOB', true).catch((e: { code: string; message: string }) => e)
         expect(err).toMatchObject({ code: 'SUMMIT_NAME_TAKEN', message: expect.stringContaining('letter case') })
         expect(mapOf(root, g)).toEqual({ Bob: ja.uuid, bob: jb.uuid })
+    })
+
+    it('{Bob: me, bob: gone X}: re-claiming Bob is refused without force; with force bob is taken over', async () => {
+        const { a, ja, jb, g } = await twoAgents()
+        writeMap(root, g, { Bob: ja.uuid, bob: jb.uuid })
+        ageBeat(root, jb.hostKey, STALE_MS * 3)
+        expect(await errorCode(rename(a, 'Bob'))).toBe('SUMMIT_NAME_TAKEN')
+        expect(await rename(a, 'Bob', true)).toMatchObject({ takeover: { from: jb.uuid, reason: 'holder-gone' } })
+        expect(mapOf(root, g)).toEqual({ Bob: ja.uuid })
+    })
+
+    it('@bob that names exactly a gone holder while Bob lives: queued, with a note', async () => {
+        const { a, jb, g } = await twoAgents()
+        const c = callFor(root, 'claude')
+        const jc = await join(c)
+        writeMap(root, g, { Bob: jb.uuid, bob: jc.uuid })
+        ageBeat(root, jc.hostKey, STALE_MS * 3)
+        const res = await send(a, { to: '@bob', message: 'for the gone one' })
+        expect(res).toMatchObject({
+            to: { uuid: jc.uuid },
+            wake: 'queued',
+            note: expect.stringContaining('not active'),
+        })
     })
 
     it('a claim of bob over {bob: leftover, Bob: X live} never deletes the entry of X', async () => {
