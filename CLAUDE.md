@@ -43,8 +43,10 @@ npm run dev -- <args>   # run the CLI from source with tsx
     - Claude: `claude-<sessionId>`. The SessionStart hook writes `.sessions/claude-<claudePid>.json`
       (`src/core/sessions.ts`; pid = the hook's ppid, `$CLAUDE_PID` only confirms); the server reads it
       via its parent pid on EVERY call and trusts it only when written after its own start minus 30 s
-      (a reused pid must not adopt a dead session's file). UserPromptSubmit and FileChanged refresh the
-      file from their stdin `session_id` (same writer), so a `/mcp` reconnect recovers on the next prompt.
+      (a reused pid must not adopt a dead session's file). UserPromptSubmit refreshes the file from its
+      stdin `session_id` (same writer), so a `/mcp` reconnect recovers on the next prompt; FileChanged only
+      renews `at` when its stdin id is the recorded one (it must never switch the session).
+    - OMP renews its session file on `agent_start` too (`hook ext-session`).
     - pi: `pi-<sessionId>` from env `SUMMIT_SESSION_ID`: the extension calls `registerMcpServer` on every
       `session_start`. Install writes NO pi mcp.json entry (a same-name entry would win) and retires an
       old one (`kind: 'retire'` action).
@@ -82,7 +84,7 @@ npm run dev -- <args>   # run the CLI from source with tsx
 - Claude hooks:
     - Exec form in hooks.json (`command` = node, `args` = [cli, "hook", sub]): no shell on any OS, so
       the hook's ppid is claude. Follows the Claude Code docs; not yet run live on any OS.
-    - SessionStart records the session (pid from `$CLAUDE_PID`, else its ppid) and arms
+    - SessionStart records the session (pid = its parent pid; `$CLAUDE_PID` only confirms) and arms
       `.wake/claude-<sessionId>.signal`; FileChanged reads the session file to find the current signal.
     - FileChanged has no matcher. It sets `asyncRewake: true` and `timeout: 20`. It exits 0 when
       nothing is unread, else it prints the notice on stderr and exits 2.

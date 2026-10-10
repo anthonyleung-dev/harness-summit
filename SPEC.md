@@ -66,7 +66,7 @@ be resumed long after its process exited, and it must find its agent (uuid, name
 
 | Harness | Host key | Source of the session id | Same agent after | New agent after |
 |---|---|---|---|---|
-| Claude Code | `claude-<sessionId>` | the session file `<root>/.sessions/claude-<claudePid>.json`, written by the plugin's SessionStart hook (startup, resume, clear, compact; stdin `session_id`; pid from `$CLAUDE_PID`, else the hook's ppid) and read by the MCP server through its parent pid on EVERY call | `--resume`/`/resume` (any time later), compact | `/clear` |
+| Claude Code | `claude-<sessionId>` | the session file `<root>/.sessions/claude-<claudePid>.json`, written by the plugin's SessionStart hook (startup, resume, clear, compact; stdin `session_id`; pid = the hook's parent pid; `$CLAUDE_PID` only confirms it) and read by the MCP server through its parent pid on EVERY call | `--resume`/`/resume` (any time later), compact | `/clear` |
 | pi | `pi-<sessionId>` | env `SUMMIT_SESSION_ID` of the MCP server: the pi extension registers the server itself on every `session_start` (`registerMcpServer`, `exposure: "direct"`, env from `ctx.sessionManager.getSessionId()`); pi restarts the child for every session, so the env is always current (probes/pi.md P1, P2) | `/resume` | `/new` |
 | OMP | `omp-<sessionId>` | the session file `<root>/.sessions/omp-<ompPid>.json`, written by the extension (only with `ctx.hasUI`) on `session_start` and `session_switch` and read by the server through its parent pid on every call (OMP keeps the child across `/new`, probes/omp.md M2) | resume | `/new` |
 | Codex | `codex-<threadId>` | `extra._meta.threadId` on each `tools/call` (cross-check `_meta["x-codex-turn-metadata"].thread_id`) | `codex resume` | `/new` |
@@ -85,9 +85,11 @@ Rules:
   earlier than the server's own start minus 30 s (`SESSION_CLOCK_TOLERANCE_MS`: the host writes it at
   its startup, about when it starts the server); an older file reads as "no session"
   (`SUMMIT_NO_HOST_KEY`, "hooks did not run"), and the server's timer never beats its key.
-- Claude refreshes its session file on more than SessionStart: the `UserPromptSubmit` hook and every
-  `FileChanged` (wake) hook rewrite it with the `session_id` from their stdin (a common input field of
-  every hook event, Claude Code hooks docs) through the same writer, with a new `at`. So a server
+- Claude refreshes its session file on more than SessionStart: the `UserPromptSubmit` hook rewrites it
+  with the `session_id` from its stdin (a common input field of every hook event, Claude Code hooks
+  docs) through the same writer, with a new `at`; every `FileChanged` (wake) hook renews `at` only when
+  its stdin `session_id` equals the recorded one (a wake hook that started before a `/clear` and ends
+  after it must never switch the session back). Only SessionStart and UserPromptSubmit change the id. So a server
   reconnected by hand (`/mcp`) long after SessionStart works again from the user's next prompt or the
   next wake. A hook input without `session_id` writes nothing. The UserPromptSubmit hook does one file
   write, prints nothing (its stdout would become model context) and always exits 0.
@@ -111,9 +113,16 @@ Rules:
   written by older versions may hold `hostStart`; it is ignored and dropped on the next write.
 - Upgrade note: older versions keyed claude, pi and omp by the host pid (`claude-<pid>`). Those records
   and agent folders stay on disk and nothing reads them again; a session joins anew after the upgrade.
-- Known limit: OMP records its session only in an interactive session (`ctx.hasUI`). An OMP run without
-  a UI gets `SUMMIT_NO_HOST_KEY`, or, when an earlier OMP process with the same pid left a session file,
-  that earlier session's agent.
+- Known limit: OMP records its session only in an interactive session (`ctx.hasUI`): on `session_start`,
+  `session_switch` and every `agent_start` (the last one renews `at` through `hook ext-session`, so an
+  OMP-restarted server trusts the file again from the next turn). An OMP run without a UI gets
+  `SUMMIT_NO_HOST_KEY` (a session file left by an earlier OMP process with the same pid is older than
+  the new server and is not trusted).
+- Known limit (pid reuse): the hooks renew `at` on every prompt and every wake, so a dead host's file
+  can be at most a few seconds older than its last prompt. A new host that gets the same pid within
+  30 s of that prompt, and whose server reads the file before its own SessionStart rewrites it, is
+  trusted with the dead session until then. It needs a host death and a pid reuse inside one 30 s
+  window, before the new host's first hook.
 - Unfinished group move: when the record's group holds no folder for the uuid but another group does
   (the move stopped after the folder moved), every read points the record at that group and drops the
   uuid from the old group's map. When no group holds the folder, the caller counts as not joined.
@@ -164,7 +173,12 @@ temp dir and never touch the real root.
   `process.cwd()`. Record which source was used in `agent.json.cwdSource`.
 - Named group key: the group name itself, matching `^[a-z0-9][a-z0-9-]{0,31}$`, not 32 hex
   characters, and not a Windows device name (`con`, `prn`, `aux`, `nul`, `com0`-`com9`, `lpt0`-`lpt9`,
-  also with superscript digits; `isReservedName`, the one definition, also used for display names).
+  `isReservedName`, the one definition; the name patterns are ASCII-only, so the superscript forms cannot
+  occur). The rule applies where a name or group is chosen anew (`validateName`, `claimName`,
+  `namedGroupKey`); names and mail written by older versions stay readable (`StoredNameSchema`,
+  `isSenderLabel`), and such an agent renames away before it can claim its name elsewhere.
+- At start, a server sets the root to 0700 once (a root created 0755 by an older version then blocks
+  traversal); quiet where the OS has no POSIX modes or the root does not exist yet.
 - Modes: the summit root and every folder in it are created 0700, every file 0600 (`DIR_MODE`,
   `FILE_MODE` in `src/core/paths.ts`), where the OS supports modes (Windows keeps only the write bit).
 - `summit_group <name> [force]` MOVES the agent, in this order: claim the name in the new group's map
@@ -278,9 +292,12 @@ replyTo: <message id>      # only on replies
   operations each, and it is not closed.
 - Name ownership (owner decision, 2026-10-10). A map entry whose uuid has no folder in this group is a
   leftover (a move or a crash left it; a move in progress holds the lock): the name is free, and every
-  claim drops all such entries. Names are unique ignoring letter case (`Alice` and `alice` are one name:
-  each name is an inbox file name, and macOS and Windows file systems ignore case by default;
-  `nameKey` in `src/core/members.ts`), and `@name` resolves ignoring case. Otherwise rename fails with
+  claim drops all such entries. New names are unique ignoring letter case (`Alice` and `alice` are one
+  name: each name is an inbox file name, and macOS and Windows file systems ignore case by default;
+  `nameKeys` in `src/core/members.ts`). A lookup (`@name`) takes the exact key first, else a case match.
+  A claim judges every case match: our own exact entry is free; one other holder is judged as below and
+  only its entry is replaced; several (a case pair an older version wrote) refuse the claim until one of
+  them renames. Otherwise rename fails with
   `SUMMIT_NAME_TAKEN` while the name maps to a different uuid whose folder exists in this group: always when the holder is `alive: true`, and without
   `force` for every other holder (`alive: false`: no server beat it for 10 s, or its heartbeat is gone;
   `"unknown"`: OpenCode), because its session may resume later and expect its name. With `force: true`
@@ -332,7 +349,7 @@ content, both built in `src/core/notice.ts`:
 
 | Harness | `wake` record | Sender action | Receiver side | Evidence |
 |---|---|---|---|---|
-| Claude Code | `{ type: "signal", path: <root>/.wake/claude-<sessionId>.signal }` | overwrite the signal file with a timestamp line | Plugin hooks. `SessionStart` (stdin has `session_id`, `source`; env `CLAUDE_PID`) records the session in `.sessions/claude-<claudePid>.json` (section 3), creates the session's signal file only if missing (touch semantics; never truncate: a truncate on a re-arm fires an extra FileChanged) and prints `{"hookSpecificOutput":{"hookEventName":"SessionStart","watchPaths":["<signal>"]}}`; it fires again on resume, `/clear` and compact (a new session id on `/clear`: a new path). Only SessionStart prints `watchPaths`. `UserPromptSubmit` (timeout 10) only refreshes the session file (section 3) and prints nothing. `FileChanged` (no matcher, `asyncRewake: true`, timeout 20) first refreshes the session file from its stdin `session_id`, then reads the session this claude process runs now from its session file and computes the notice from disk for host key `claude-<sessionId>` when the changed file is that session's signal; exit 0 when there is nothing unread, else notice on stderr and exit 2. It must NOT print `watchPaths` (that would replace the list). On SessionStart, if unread mail already exists, add the notice as `additionalContext` | probes/claude.md K1–K4; AUDIT §2.1 |
+| Claude Code | `{ type: "signal", path: <root>/.wake/claude-<sessionId>.signal }` | overwrite the signal file with a timestamp line | Plugin hooks. `SessionStart` (stdin has `session_id`, `source`; pid = the hook's parent pid) records the session in `.sessions/claude-<claudePid>.json` (section 3), creates the session's signal file only if missing (touch semantics; never truncate: a truncate on a re-arm fires an extra FileChanged) and prints `{"hookSpecificOutput":{"hookEventName":"SessionStart","watchPaths":["<signal>"]}}`; it fires again on resume, `/clear` and compact (a new session id on `/clear`: a new path). Only SessionStart prints `watchPaths`. `UserPromptSubmit` (timeout 10) only refreshes the session file (section 3) and prints nothing. `FileChanged` (no matcher, `asyncRewake: true`, timeout 20) first renews the session file when its stdin `session_id` is the recorded one, then reads the session this claude process runs now from its session file and computes the notice from disk for host key `claude-<sessionId>` when the changed file is that session's signal; exit 0 when there is nothing unread, else notice on stderr and exit 2. It must NOT print `watchPaths` (that would replace the list). On SessionStart, if unread mail already exists, add the notice as `additionalContext` | probes/claude.md K1–K4; AUDIT §2.1 |
 | pi | `{ type: "signal", path: <root>/.wake/pi-<sessionId>.signal }` | same | Extension `harness-summit.ts`: on every `session_start` register the MCP server (section 3), then (only when `ctx.hasUI === true`) arm and `fs.watch` the session's signal (`hook ext-arm --harness pi --session <id>`); on change compute the notice; if idle: `sendMessage(notice, {triggerTurn:false})` then `sendUserMessage("harness-summit mail above. Call summit_read.", {deliverAs:"steer"})` with a 10 s dedupe (the parent-wake shape, which runs `before_agent_start` where pi waits for MCP servers); if busy: `sendMessage(notice, {triggerTurn:true, deliverAs:"followUp"})`. Close the watcher on `session_shutdown`, re-arm on the next `session_start` | probes/pi.md P1–P4 |
 | OMP | `{ type: "signal", path: <root>/.wake/omp-<sessionId>.signal }` | same | Same extension file. On `session_start` and `session_switch` (only when `ctx.hasUI === true`) record the session and arm its signal (`hook ext-arm --harness omp --session <id> --pid <ompPid>`), then watch it; on change `sendMessage(notice, {triggerTurn:true, deliverAs:"followUp"})` | probes/omp.md M2, M4 |
 | Codex | `{ type: "codex-queue", threadId }` | run `codex queue --thread <threadId> --message <notice>` once and wait for it to exit (15 s timeout), no retry (queue may accept before a failed receipt; a retry duplicates) | nothing to install | probes/codex.md C4; tested twice by the orchestrator |
