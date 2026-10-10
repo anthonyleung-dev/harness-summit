@@ -56,51 +56,56 @@ differently (Claude plugin: `mcp__plugin_harness-summit_harness-summit__summit_j
 ## 3. Identity
 
 The server must not assume one MCP process per agent session. That is false for Codex (one child per
-thread, old children outlive `/new`), OpenCode (one child per directory, shared by every session) and
-OMP (child survives `/new`). Instead, every tool call resolves a **host key**, and the server reads
-the identity for that key from disk on every call (never cached in memory).
+thread, old children outlive `/new`), OpenCode (one child per directory, shared by every session),
+Claude Code (one child across `/clear`) and OMP (child survives `/new`). Instead, every tool call
+resolves a **host key**, and the server reads the identity for that key from disk on every call (never
+cached in memory).
 
-| Harness | Host key | Source | Survives |
-|---|---|---|---|
-| Claude Code | `claude-<claudePid>` | `process.ppid` of the MCP server (the claude process) | `/clear`, `/resume` inside the same process (probes/claude.md K1, K4) |
-| pi | `pi-<piPid>` | `process.ppid` (pi restarts the MCP child on `/new`/`/resume` but the parent stays) | `/new`, `/resume` |
-| OMP | `omp-<ompPid>` | `process.ppid` (child survives `/new`) | `/new` |
-| Codex | `codex-<threadId>` | `extra._meta.threadId` on each `tools/call` (cross-check `_meta["x-codex-turn-metadata"].thread_id`) | nothing: `/new` is a new thread, a new agent |
-| OpenCode | `opencode-<sessionID>` | `extra._meta["ai.opencode/sessionID"]` on each `tools/call` | nothing: a new session is a new agent |
+Identity follows the harness **session**, never a process (owner decision, 2026-10-10): a session can
+be resumed long after its process exited, and it must find its agent (uuid, name, unread mail) again.
+
+| Harness | Host key | Source of the session id | Same agent after | New agent after |
+|---|---|---|---|---|
+| Claude Code | `claude-<sessionId>` | the session file `<root>/.sessions/claude-<claudePid>.json`, written by the plugin's SessionStart hook (startup, resume, clear, compact; stdin `session_id`; pid from `$CLAUDE_PID`, else the hook's ppid) and read by the MCP server through its parent pid on EVERY call | `--resume`/`/resume` (any time later), compact | `/clear` |
+| pi | `pi-<sessionId>` | env `SUMMIT_SESSION_ID` of the MCP server: the pi extension registers the server itself on every `session_start` (`registerMcpServer`, `exposure: "direct"`, env from `ctx.sessionManager.getSessionId()`); pi restarts the child for every session, so the env is always current (probes/pi.md P1, P2) | `/resume` | `/new` |
+| OMP | `omp-<sessionId>` | the session file `<root>/.sessions/omp-<ompPid>.json`, written by the extension (only with `ctx.hasUI`) on `session_start` and `session_switch` and read by the server through its parent pid on every call (OMP keeps the child across `/new`, probes/omp.md M2) | resume | `/new` |
+| Codex | `codex-<threadId>` | `extra._meta.threadId` on each `tools/call` (cross-check `_meta["x-codex-turn-metadata"].thread_id`) | `codex resume` | `/new` |
+| OpenCode | `opencode-<sessionID>` | `extra._meta["ai.opencode/sessionID"]` on each `tools/call` | the same session | a new session |
 
 Rules:
 - The harness comes ONLY from the `--harness` flag in the registration. Never infer harness or
-  session from env: an OpenCode MCP child inherits the env of whoever started the service, including
-  `CLAUDE_CODE_SESSION_ID` (probes/opencode.md). `CLAUDE_CODE_SESSION_ID` is stale after `/clear`
-  anyway (probes/claude.md K1).
+  session from inherited env: an OpenCode MCP child inherits the env of whoever started the service,
+  including `CLAUDE_CODE_SESSION_ID` (probes/opencode.md), and `CLAUDE_CODE_SESSION_ID` is stale after
+  `/clear` anyway (probes/claude.md K1). The one env the server reads is `SUMMIT_SESSION_ID`, and only
+  with `--harness pi`: our own extension sets it on the child it registers.
+- The parent pid is read ONCE, when the server starts (`runMcpServer`): after the host dies, Linux
+  reparents the server and `process.ppid` would name init. The pid never is the identity: it only finds
+  the session file that the live host rewrote at startup, so a reused pid finds the new host's session,
+  never the dead one's.
+- A signal harness call without a session id fails with `SUMMIT_NO_HOST_KEY` and says why: Claude
+  "the harness-summit plugin hooks did not run"; pi "SUMMIT_SESSION_ID is not set: the pi extension
+  registers this server; remove any harness-summit entry from ~/.pi/agent/mcp.json"; OMP "the OMP
+  extension did not run (it needs an interactive session)".
 - Codex and OpenCode send no id on `initialize` or `tools/list`; the host key is known only inside
   a `tools/call`. A call without the expected `_meta` key fails with `SUMMIT_NO_HOST_KEY`.
 - Identity file: `<root>/.hosts/<hostKey>.json` = `{ uuid, groupKey, harness, hostKey, joinedAt }`.
-  `summit_join` creates it; `summit_group` updates `groupKey`; `summit_bye` deletes it. Records written
-  before the heartbeat may still hold `hostStart`; it is ignored and dropped on the next write.
-- Stale record (no OS process inspection, every OS): a pid-keyed record (Claude Code, pi, OMP) must
-  not pass to a new host process that got the same pid. A new MCP server for a pid-keyed harness checks
-  the record of its own host key `<harness>-<process.ppid>` once, when it starts, before it connects its
-  transport (`dropStaleHost`, `src/core/identity.ts`): when the agent's heartbeat (section 7) is older
-  than 15 s or missing, no server has served that agent for 15 s, the record belongs to a dead session,
-  and it is deleted (the caller counts as not joined). A fresher heartbeat means the host's previous
-  server just stopped (pi restarts its MCP child on `/new`), and the record stays. From then on the
-  server beats the record's agent itself, so the check is not repeated on read: in that server it would
-  always pass, and in any other reader (a hook, the extension) an age check would wrongly drop a live
-  record whose server has not beaten yet after a suspend. Codex and OpenCode keys hold no pid and are
-  never dropped this way. Known limit: a pid reused within 15 s of the old server's last beat inherits
-  the record (with its name and unread mail).
+  `summit_join` creates it; `summit_group` updates `groupKey`; `summit_bye` deletes it. Nothing else
+  deletes it: a record never goes stale, because its key names a session that may resume. Records
+  written by older versions may hold `hostStart`; it is ignored and dropped on the next write.
+- Upgrade note: older versions keyed claude, pi and omp by the host pid (`claude-<pid>`). Those records
+  and agent folders stay on disk and nothing reads them again; a session joins anew after the upgrade.
+- Known limit: OMP records its session only in an interactive session (`ctx.hasUI`). An OMP run without
+  a UI gets `SUMMIT_NO_HOST_KEY`, or, when an earlier OMP process with the same pid left a session file,
+  that earlier session's agent.
 - Unfinished group move: when the record's group holds no folder for the uuid but another group does
   (the move stopped after the folder moved), every read points the record at that group and drops the
   uuid from the old group's map. When no group holds the folder, the caller counts as not joined.
 - `summit_join` on a host key that already has an identity returns the existing identity (idempotent)
   and refreshes `agent.json`. It writes `agent.json` under the group's `members.lock` and keeps the
   name that file holds at that moment, so a name takeover is never undone.
-- Every tool call of a joined agent (and `summit_join` itself) beats its heartbeat and registers its host
-  key with the serving server's heartbeat timer (section 7). This matters for Codex: a resumed thread or a
-  restarted MCP server keeps the identity (same thread id) but runs in a new server, which serves the
-  agent from its first call on. Until that call, nobody beats the agent, and after 15 s it reads
-  `alive: false` (a closed thread is gone; its name can be taken over without `force`).
+- Every tool call of a joined agent (and `summit_join` itself) beats its host key's heartbeat (section
+  7). A Codex call also registers its thread with the serving server's heartbeat timer: a resumed thread
+  runs in a new server, which serves the agent from its first call on.
 - Every write of an `agent.json` that already exists (join, rename, name takeover, the
   restore after a failed move) is one read-modify-write under the group's `members.lock`
   (`updateAgent`), so no writer writes back a field another writer changed meanwhile.
@@ -115,14 +120,15 @@ temp dir and never touch the real root.
 ```
 <root>/
   .hosts/<hostKey>.json        # identity per host key (section 3)
-  .wake/<harness>-<pid>.signal # wake signal for claude/pi/omp hosts (section 6)
+  .sessions/<harness>-<pid>.json # { sessionId, at }: the session a claude or omp process runs now (section 3)
+  .alive/<hostKey>.json        # heartbeat: its mtime is the last beat of the serving server (section 7)
+  .wake/<hostKey>.signal       # wake signal for claude/pi/omp sessions (section 6)
   <groupKey>/
     members.json               # { "version": 1, "members": { "<name>": "<uuid>" } }
     members.lock               # exclusive lock while members.json is rewritten (owner line, lease, section 5)
     members.lock.break         # held for a few file operations while a waiter breaks a stale lock
     <uuid>/
       agent.json               # { uuid, name|null, harness, hostKey, cwd, cwdSource, projectRoot, pid, joinedAt, wake }
-      .heartbeat               # liveness: its mtime is the last beat of the serving MCP server (section 7)
       <sender>.md              # messages FROM <sender> TO this agent; only <sender> appends to it
       .cursor.json             # { "<file>.md": <byte offset read so far> }; only the owner writes it
       .cursor.lock             # lock held by summit_read while it scans and moves the cursor
@@ -159,7 +165,7 @@ temp dir and never touch the real root.
 - `<sender>` in a file name is the sender's display name if it has one, else its uuid.
 - `agent.json.pid`: the host pid for Claude Code, pi and OMP; the MCP server's own `process.pid` for
   Codex; `null` for OpenCode, as of the last `summit_join`. It is informational only: liveness comes
-  from `.heartbeat` (section 7). The field stays because servers before the heartbeat require it. Records
+  from the heartbeat of the host key (section 7). The field stays because servers before the heartbeat require it. Records
   written before the heartbeat may hold `pidStart`; it is ignored and dropped on the next write.
 
 ## 5. Messages
@@ -209,15 +215,17 @@ replyTo: <message id>      # only on replies
   lock file holds one owner line: `<token> <ISO time>` (a random token and the time the lock was
   taken). A holder releases only its own token. Owner lines of older servers (`<token> <pid> <ISO
   time>` and `<token> <pid> <start|-> <ISO time>`) still parse; only their token is used.
-- A lock is a lease (no OS process inspection, every OS): while it holds the lock, the holder sets the
-  lock file's mtime to now every 2 s (`src/core/lease.ts`), for as long as it holds it. A lock is stale
-  when its mtime is older than 10 s (its holder died or hangs and stopped refreshing), or when it holds
-  a token that the reading process itself abandoned (its release failed). So a live holder keeps its
-  lock however long it holds it (a group move holds the old and the new group's `members.lock` while it
-  waits for a `.cursor.lock`; a call that needs either lock meanwhile waits, up to its 15 s timeout). A
-  lock file without a readable owner line (a holder died between the create and the write) and a lock
-  left by an older server (which does not refresh) go stale by the same age rule. A refresh first
-  re-reads the token, so a holder never refreshes a lock that another waiter took after a break.
+- A lock is a lease (no OS process inspection, every OS; XPLAT-AUDIT §H): right after the create and
+  then every 2 s while it holds the lock, the holder sets the lock file's mtime to now
+  (`src/core/lease.ts`), for at most `LOCK_MAX_HOLD_MS` = 60 s (four times the longest legal hold: a
+  group move that waits up to 15 s for a `.cursor.lock`). A lock is stale when its mtime is older than
+  10 s and a second look confirms it: the waiter waits 2.5 s (`SECOND_LOOK_MS`, its own timer) and reads
+  the mtime again; any change means the holder lives (a wall-clock jump or a laptop sleep never breaks a
+  live holder). A lock that holds a token the reading process itself abandoned (its release failed) is
+  stale at once. A lock file without a readable owner line (a holder died between the create and the
+  write) and a lock left by an older server (which does not refresh) go stale by the same age rule. A
+  refresh first re-reads the token, so a holder never refreshes a lock that another waiter took after a
+  break.
 - Breakers are serialized by `<lock>.break`, an O_EXCL lock of the same format that is held only for
   a few file operations and is not refreshed; it is stale when it is older than 10 s. Under it, the
   waiter re-reads the lock, checks that it still holds the stale content it saw and is still stale,
@@ -231,10 +239,11 @@ replyTo: <message id>      # only on replies
   moment) it retries with backoff for about 1 s, then fails; a failed rename never counts as done. On
   Windows a lock create that fails with EPERM, EACCES or EBUSY (a name still "delete pending") counts as
   "taken, retry".
-- Known limits of the lock: a live process that hangs inside a critical section while its timer still
-  runs keeps its lock (the lease only proves the event loop runs); a holder whose event loop stalls for
-  more than 10 s (a suspend, a blocking call) loses its lock to a waiter, logs `lease lost`, and its
-  release leaves the new holder's lock alone, but its critical section may overlap the new holder's.
+- Known limits of the lock: a holder that hangs inside a critical section while its timer still runs
+  keeps its lock for up to 60 s, then loses it about 10 s later; a holder whose event loop stalls for
+  more than 12.5 s (a blocking call) loses its lock to a waiter, logs `lease lost`, and its release
+  leaves the new holder's lock alone, but its critical section may overlap the new holder's (there is
+  no fencing token).
   A holder that cannot remove its lock on release abandons it: it is stale at once for that process and
   after 10 s for every other one. Breaking a stale break lock is not serialized: every waiter that sees
   it calls the tomb rename on it. So when a breaker dies inside its few-operation break, a late waiter
@@ -242,17 +251,20 @@ replyTo: <message id>      # only on replies
   back, so two breakers run at once. Two holders of the lock itself then need a second race of the same
   shape on the lock. This needs a breaker crash and four waiters inside two windows of a few file
   operations each, and it is not closed.
-- Name ownership. Rename fails with `SUMMIT_NAME_TAKEN` while the name maps to a different uuid whose
-  folder exists in this group and whose holder is `alive: true`. A map entry whose uuid has no folder
-  in this group is a leftover (a move or a crash left it; a move in progress holds the lock): the
-  name is free, and every claim drops all such entries. A holder with `alive: false` (no server beat it
-  for 15 s) loses the name: the claim takes it over, removes the holder's map entry, sets the holder's
+- Name ownership (owner decision, 2026-10-10). A map entry whose uuid has no folder in this group is a
+  leftover (a move or a crash left it; a move in progress holds the lock): the name is free, and every
+  claim drops all such entries. Otherwise rename fails with `SUMMIT_NAME_TAKEN` while the name maps to a
+  different uuid whose folder exists in this group: always when the holder is `alive: true`, and without
+  `force` for every other holder (`alive: false`: no server beat it for 10 s; `"unknown"`: OpenCode, or
+  an agent never beaten), because its session may resume later and expect its name. With `force: true`
+  (`/sr <name> --force`, `/sg <group> --force`) a holder that is not alive loses the name; a holder that
+  looks gone gets the second look first (section 7), and a beat during it means alive (refused). The
+  error says when `force` would help. A takeover removes the holder's map entry, sets the holder's
   `agent.json.name` to null (so it never writes a second `<name>.md`) and keeps the holder's folder.
-  A holder with `alive: "unknown"` (OpenCode) loses it only with
-  `force: true` (`/sr <name> --force`, `/sg <group> --force`); the error says so. The map write and
-  the caller's `agent.json` write happen under one `members.lock`. A result with a takeover says why:
-  `takeover: { from: <uuid>, reason: "holder-gone" | "forced-unknown" }` (`holder-gone`: `alive:
-  false`; `forced-unknown`: `alive: "unknown"` and `force`); `takeover` is null when the name was free.
+  The map write and the caller's `agent.json` write happen under one `members.lock`. A result with a
+  takeover says why: `takeover: { from: <uuid>, reason: "holder-gone" | "forced-unknown" }`
+  (`holder-gone`: `alive: false`; `forced-unknown`: `alive: "unknown"`); `takeover` is null when the
+  name was free.
   When the caller's folder left the group during the call (a parallel `summit_group`), the rename
   fails with `SUMMIT_TARGET_GONE`, and under the same lock hold it drops its map entry and gives a
   taken-over name back to its holder (map entry and `agent.json.name`), as a failed move does.
@@ -293,9 +305,9 @@ content, both built in `src/core/notice.ts`:
 
 | Harness | `wake` record | Sender action | Receiver side | Evidence |
 |---|---|---|---|---|
-| Claude Code | `{ type: "signal", path: <root>/.wake/claude-<claudePid>.signal }` | overwrite the signal file with a timestamp line | Plugin hooks. `SessionStart` (stdin has `session_id`, `source`; env `CLAUDE_PID`) creates the signal file only if missing (touch semantics; never truncate: a truncate on the `/clear` re-arm fires an extra FileChanged) and prints `{"hookSpecificOutput":{"hookEventName":"SessionStart","watchPaths":["<signal>"]}}`; it fires again on `/clear` and re-arms the same path. `FileChanged` (no matcher, `asyncRewake: true`, timeout 20) computes the notice from disk for host key `claude-<CLAUDE_PID>`; exit 0 when there is nothing unread, else notice on stderr and exit 2. It must NOT print `watchPaths` (that would replace the list). On SessionStart, if unread mail already exists, add the notice as `additionalContext` | probes/claude.md K1–K4; AUDIT §2.1 |
-| pi | `{ type: "signal", path: <root>/.wake/pi-<piPid>.signal }` | same | Extension `harness-summit.ts`: on `session_start` (only when `ctx.hasUI === true`) `fs.watch` the signal keyed by `process.pid`; on change compute the notice; if idle: `sendMessage(notice, {triggerTurn:false})` then `sendUserMessage("harness-summit mail above. Call summit_read.", {deliverAs:"steer"})` with a 10 s dedupe (the parent-wake shape, which runs `before_agent_start` where pi waits for MCP servers); if busy: `sendMessage(notice, {triggerTurn:true, deliverAs:"followUp"})`. Close the watcher on `session_shutdown`, re-arm on the next `session_start` | probes/pi.md P1–P4 |
-| OMP | `{ type: "signal", path: <root>/.wake/omp-<ompPid>.signal }` | same | Same extension file. On `session_start` and `session_switch` (only when `ctx.hasUI === true`) watch the signal keyed by `process.pid`; on change `sendMessage(notice, {triggerTurn:true, deliverAs:"followUp"})` | probes/omp.md M2, M4 |
+| Claude Code | `{ type: "signal", path: <root>/.wake/claude-<sessionId>.signal }` | overwrite the signal file with a timestamp line | Plugin hooks. `SessionStart` (stdin has `session_id`, `source`; env `CLAUDE_PID`) records the session in `.sessions/claude-<claudePid>.json` (section 3), creates the session's signal file only if missing (touch semantics; never truncate: a truncate on a re-arm fires an extra FileChanged) and prints `{"hookSpecificOutput":{"hookEventName":"SessionStart","watchPaths":["<signal>"]}}`; it fires again on resume, `/clear` and compact (a new session id on `/clear`: a new path). Only SessionStart prints `watchPaths`. `FileChanged` (no matcher, `asyncRewake: true`, timeout 20) reads the session this claude process runs now from its session file and computes the notice from disk for host key `claude-<sessionId>` when the changed file is that session's signal; exit 0 when there is nothing unread, else notice on stderr and exit 2. It must NOT print `watchPaths` (that would replace the list). On SessionStart, if unread mail already exists, add the notice as `additionalContext` | probes/claude.md K1–K4; AUDIT §2.1 |
+| pi | `{ type: "signal", path: <root>/.wake/pi-<sessionId>.signal }` | same | Extension `harness-summit.ts`: on every `session_start` register the MCP server (section 3), then (only when `ctx.hasUI === true`) arm and `fs.watch` the session's signal (`hook ext-arm --harness pi --session <id>`); on change compute the notice; if idle: `sendMessage(notice, {triggerTurn:false})` then `sendUserMessage("harness-summit mail above. Call summit_read.", {deliverAs:"steer"})` with a 10 s dedupe (the parent-wake shape, which runs `before_agent_start` where pi waits for MCP servers); if busy: `sendMessage(notice, {triggerTurn:true, deliverAs:"followUp"})`. Close the watcher on `session_shutdown`, re-arm on the next `session_start` | probes/pi.md P1–P4 |
+| OMP | `{ type: "signal", path: <root>/.wake/omp-<sessionId>.signal }` | same | Same extension file. On `session_start` and `session_switch` (only when `ctx.hasUI === true`) record the session and arm its signal (`hook ext-arm --harness omp --session <id> --pid <ompPid>`), then watch it; on change `sendMessage(notice, {triggerTurn:true, deliverAs:"followUp"})` | probes/omp.md M2, M4 |
 | Codex | `{ type: "codex-queue", threadId }` | run `codex queue --thread <threadId> --message <notice>` once and wait for it to exit (15 s timeout), no retry (queue may accept before a failed receipt; a retry duplicates) | nothing to install | probes/codex.md C4; tested twice by the orchestrator |
 | OpenCode | `{ type: "opencode-prompt", sessionID }` | run `opencode api session.prompt --param sessionID=<id> -d '{"text":"<notice>","delivery":"queue"}'` once and wait for it to exit (15 s timeout) | nothing to install | probes/opencode.md; tested by the orchestrator |
 
@@ -349,21 +361,24 @@ content, both built in `src/core/notice.ts`:
   running tool calls to answer (at most 3 s), flush stdout, and exit 0. It never deletes folders on
   exit. On Windows a signal sent to a child terminates it at once, with no handler, so only the stdin
   end path drains there (the MCP SDK client ends stdin first and kills 2 s later).
-- Heartbeat (no OS process inspection, every OS; `src/core/heartbeat.ts`). Every MCP server, while it
-  runs, sets the mtime of `<group>/<uuid>/.heartbeat` to now (`utimes`, with this machine's clock) for
-  each agent it serves: every 5 s from an unref'd timer, on every tool call of that agent, and at
-  `summit_join`. Which agents a server serves: for Claude Code, pi and OMP the agent of its host key
-  `<harness>-<process.ppid>` once joined (registered at start, after the stale check of section 3); for
-  Codex the agent of each thread id it has seen in a tool call; for OpenCode none (one shared server
-  outlives every session). Each tick finds the agent's folder through its `.hosts` record, so a beat
-  follows a group move; a beat never creates a folder.
-- `summit_members` reports `alive`: `"unknown"` for OpenCode; else `true` while the agent's heartbeat
-  is at most 15 s old, `false` when it is older or missing. The same rule decides a name takeover
-  (section 5). Lock staleness uses its own lease (section 5); no rule reads `agent.json.pid`.
-- Known limits: liveness is "some server beat this agent within 15 s", not "a model session is
-  attached": a Codex server that outlives `/new` keeps the old thread alive until the TUI exits (section
-  6). After an upgrade from a version without heartbeats, an agent served by an old server (a session
-  started before the upgrade) reads `alive: false` until that session restarts.
+- Heartbeat (no OS process inspection, every OS; `src/core/heartbeat.ts`, XPLAT-AUDIT §H). Every MCP
+  server, while it runs, sets the mtime of `<root>/.alive/<hostKey>.json` to now (`utimes`, this
+  machine's clock) every 2 s (`BEAT_MS`, an unref'd timer) and on every tool call (and `summit_join`).
+  The files live outside the agent folders: a group move renames an agent folder, and Windows refuses
+  that while a file inside it is open. Which keys a server beats: Claude Code and OMP the session the
+  host runs now (read from its session file on every tick, so after `/clear` or `/new` the new session
+  beats and the old one goes stale); pi the session of its env; Codex every thread a call on this server
+  has used; OpenCode none (one shared server outlives every session). A beat never takes a lock and
+  never writes `agent.json`. A server that starts deletes heartbeat files older than 24 h.
+- `summit_members` reports `alive` from the heartbeat of the agent's host key: `"unknown"` for OpenCode
+  and for an agent never beaten (it joined before heartbeats existed); `true` while the heartbeat is at
+  most 10 s old (`STALE_MS`) or in the future; `false` when it is older. A decision that declares a
+  holder gone (a forced name takeover, section 5; a lock break uses the same second look on the lock
+  file) waits `SECOND_LOOK_MS` = 2.5 s and reads the mtime again; any change means alive.
+- Known limits: liveness is "some server beat this session within 10 s", not "a model is working in
+  it": a Codex server that outlives `/new` keeps the old thread alive until the TUI exits (section 6). A
+  stopped server (SIGSTOP, a debugger) reads gone after 10 s. After an upgrade, a session served by a
+  server from before the heartbeat reads `"unknown"` until it restarts.
 
 ## 8. Installation (`harness-summit install`)
 
@@ -381,7 +396,7 @@ claude-session-start`, `hook claude-file-changed`, `notice --host-key <key>`, `i
 |---|---|
 | Claude Code | a generated marketplace in `~/.local/share/harness-summit/claude-marketplace/` (`.claude-plugin/marketplace.json` plus the plugin in `claude/`: hooks, `.mcp.json`, skills, rendered with absolute paths); activation with `claude plugin marketplace add <that dir>` and `claude plugin install harness-summit@harness-summit --scope user`. The repo's `plugins/claude/` is the dev plugin for `claude --plugin-dir` (it starts bare `node`) |
 | Codex | a marked block in `~/.codex/config.toml`: `[mcp_servers.harness-summit]` with `args = [..., "--harness", "codex"]`, `[mcp_servers.harness-summit.env]`, and `[mcp_servers.harness-summit.tools.<tool>] approval_mode = "approve"` for each summit tool; skills in `~/.codex/skills/`. Install parses the file as TOML first and refuses (writes nothing) when it does not parse or already defines `mcp_servers.harness-summit` outside the block in any form |
-| pi | `mcpServers.harness-summit` in `~/.pi/agent/mcp.json` with `exposure: "direct"`; extension `~/.pi/agent/extensions/harness-summit.ts`; prompts in `~/.pi/agent/prompts/` |
+| pi | no `mcp.json` entry: the extension `~/.pi/agent/extensions/harness-summit.ts` registers the server on every session start (section 3), with the launch install rendered into it (`INJECTED_MCP`: absolute node, CLI, harness CLI env). An entry an older install wrote in `~/.pi/agent/mcp.json` is retired (removed by install and by uninstall), because one of the same name would win over the extension's. Prompts in `~/.pi/agent/prompts/` |
 | OMP | `mcpServers.harness-summit` in `~/.omp/agent/mcp.json`; the same extension in `~/.omp/agent/extensions/`; commands in `~/.omp/agent/commands/` |
 | OpenCode | `opencode mcp add --global [--env K=V]... harness-summit -- <node> <cli> mcp --harness opencode` (the file is JSONC with comments: do not rewrite it by hand). Observed with 2.0.24 in a temp HOME: it writes `mcp.servers.harness-summit` = `{ type: "local", command: [...], environment: {...} }` into `~/.config/opencode/opencode.json` when that exists, else `opencode.jsonc` when that exists, else a new `opencode.json`; it keeps comments but re-indents the `mcp.servers` entries; a second run replaces the entry. Commands in `~/.config/opencode/commands/` |
 

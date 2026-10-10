@@ -122,9 +122,11 @@ sequenceDiagram
   two senders never interleave.
 - **The wake notice carries no message body.** It only says that mail is waiting. The model reads
   the mail with `summit_read`.
-- **Identity follows the session.** The server learns who is calling on every tool call: from the
-  host process for Claude Code, pi and OMP, and from the thread or session id that Codex and OpenCode
-  attach to each call. So `/clear` or `/new` in Claude Code, pi and OMP keeps the same agent.
+- **Identity follows the session.** The server learns which harness session is calling on every tool
+  call: Claude Code's SessionStart hook and the OMP extension record it in a small file, the pi
+  extension passes it to the server it registers, and Codex and OpenCode attach it to each call. So a
+  session you resume, even days later, gets its agent back (name and unread mail), and `/clear` or
+  `/new` starts a new agent while the old one waits to be resumed.
 - **Bursts are debounced.** A receiver that already has a wake pending is not woken again within
   10 s. Each Codex or OpenCode wake costs a model turn.
 
@@ -148,7 +150,7 @@ sequenceDiagram
 | Claude Code | a generated plugin in `~/.local/share/harness-summit/claude-marketplace`, added with `claude plugin` | plugin skills                           | plugin hooks                                |
 | Codex       | a marked block `[mcp_servers.harness-summit]` in `~/.codex/config.toml`, with tool approvals         | `~/.codex/skills/<name>/SKILL.md`       | none needed                                 |
 | OpenCode    | `opencode mcp add --global harness-summit ...`                                                       | `~/.config/opencode/commands/<name>.md` | none needed                                 |
-| pi          | `mcpServers.harness-summit` in `~/.pi/agent/mcp.json`, with `exposure: "direct"`                     | `~/.pi/agent/prompts/<name>.md`         | `~/.pi/agent/extensions/harness-summit.ts`  |
+| pi          | registered by the extension on every session start (no `mcp.json` entry; an older one is removed)    | `~/.pi/agent/prompts/<name>.md`         | `~/.pi/agent/extensions/harness-summit.ts`  |
 | OMP         | `mcpServers.harness-summit` in `~/.omp/agent/mcp.json`                                               | `~/.omp/agent/commands/<name>.md`       | `~/.omp/agent/extensions/harness-summit.ts` |
 
 - Install edits only the harness-summit keys. It backs up each edited file once, to
@@ -165,7 +167,9 @@ sequenceDiagram
 ```text
 ~/.harness-summit/
   .hosts/<hostKey>.json          identity of one session
-  .wake/<harness>-<pid>.signal   wake signal for Claude Code, pi and OMP sessions
+  .sessions/<harness>-<pid>.json the session a Claude Code or OMP process runs now
+  .alive/<hostKey>.json          heartbeat: its server touches it every 2 s
+  .wake/<hostKey>.signal         wake signal for Claude Code, pi and OMP sessions
   .logs/<date>.log               JSON-line logs
   <groupKey>/
     members.json                 name -> uuid map of the group
@@ -173,7 +177,6 @@ sequenceDiagram
       agent.json                 the agent: name, harness, wake action, pid
       <sender>.md                messages from one sender, append-only
       .cursor.json               how far the agent has read
-      .heartbeat                 liveness: its server touches it every 5 s
 ```
 
 The group key is the md5 of the project root (the git top level, else the working directory, as its
@@ -186,18 +189,19 @@ real path; on Windows with a lower-case drive letter), or the group name after `
 - An OpenCode wake to a session with no TUI attached runs a turn nobody sees. OpenCode liveness is
   always `unknown`, so taking an OpenCode agent's name needs `--force`.
 - After `/new` in Codex, the old thread still counts as alive until the Codex TUI exits.
-- `alive` means "an MCP server touched this agent's heartbeat file in the last 15 s". A Codex thread
-  that nobody serves reads `false` after 15 s, so its name can be taken without `--force`.
-- After an upgrade, restart running sessions: an agent served by a server from before the heartbeat
-  reads `alive: false`, and a new session that gets a dead session's pid within 15 s of its last
-  heartbeat inherits that identity.
+- `alive` means "an MCP server touched this session's heartbeat file in the last 10 s". Taking the
+  name of an agent that is not alive needs `--force`, because its session may be resumed.
+- After an upgrade, restart running sessions. Agents joined by an older version (keyed by process id)
+  are not found again; each session joins anew. pi needs the new extension: install removes the old
+  `~/.pi/agent/mcp.json` entry, because one of the same name would hide the extension's server.
+- OMP records its session only in an interactive session; `omp` without a UI cannot use the tools.
 - On Windows, a session's own server is stopped without a drain when the harness kills it (Windows
   has no catchable SIGTERM for a child); harnesses that close stdin first get a clean exit.
 - Nobody deletes the folders of agents that are gone. Their names can be taken over by the next
   `/sj`, `/sr` or `/sg`.
 - The Claude Code wake uses the documented `FileChanged` + `asyncRewake` hooks. Without the plugin
   hooks, mail still arrives but the session is not woken.
-- Locks are leases refreshed every 2 s. Edge cases (a holder whose event loop stalls for over 10 s, a
+- Locks are leases refreshed every 2 s, for at most 60 s. Edge cases (a holder whose event loop stalls for over 12 s, a
   crash inside a lock break) are described in [SPEC.md](SPEC.md) §5.
 
 ## Development

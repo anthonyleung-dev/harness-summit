@@ -34,26 +34,34 @@ npm run dev -- <args>   # run the CLI from source with tsx
 
 ## Harness facts that are easy to get wrong
 
-- The harness comes ONLY from the `--harness` flag. Never infer harness or session from env. An
-  OpenCode MCP child inherits `CLAUDE_CODE_SESSION_ID` from whoever started the service, and that env
-  value is stale after `/clear` anyway.
-- Host keys (`src/core/hostKey.ts` is the only implementation):
-    - Claude, pi and OMP use `<harness>-<process.ppid>` (the host pid).
-    - Codex uses `codex-<_meta.threadId>`.
-    - OpenCode uses `opencode-<_meta["ai.opencode/sessionID"]>`.
+- The harness comes ONLY from the `--harness` flag. Never infer harness or session from inherited env.
+  An OpenCode MCP child inherits `CLAUDE_CODE_SESSION_ID` from whoever started the service, and that
+  env value is stale after `/clear` anyway. The one exception is `SUMMIT_SESSION_ID` with
+  `--harness pi`: our own pi extension sets it on the child it registers.
+- Host keys (`src/core/hostKey.ts` is the only implementation) follow the harness SESSION, never a
+  process (owner decision 2026-10-10: a session resumed days later gets its agent back):
+    - Claude: `claude-<sessionId>`. The SessionStart hook writes `.sessions/claude-<claudePid>.json`
+      (`src/core/sessions.ts`); the server reads it via its parent pid on EVERY call.
+    - pi: `pi-<sessionId>` from env `SUMMIT_SESSION_ID`: the extension calls `registerMcpServer` on every
+      `session_start`. Install writes NO pi mcp.json entry (a same-name entry would win) and retires an
+      old one (`kind: 'retire'` action).
+    - OMP: `omp-<sessionId>`. The extension (only with `ctx.hasUI`) writes `.sessions/omp-<ompPid>.json`
+      on `session_start` and `session_switch` through `hook ext-arm`; the server reads it per call.
+    - Codex `codex-<_meta.threadId>`, OpenCode `opencode-<_meta["ai.opencode/sessionID"]>`.
+    - The server reads `process.ppid` ONCE at start (`hostPid` in CallContext): after the host dies,
+      Linux reparents to init. Missing session → `SUMMIT_NO_HOST_KEY` with a message that says why.
     - Codex and OpenCode send no id on `initialize` or `tools/list`. A call without the id fails with
       `SUMMIT_NO_HOST_KEY`.
-- Identity is read from `<root>/.hosts/<hostKey>.json` on every call and never cached. One OpenCode
-  process serves many sessions, an OMP process survives `/new`, and Codex keeps old thread
-  processes alive. A read repairs a record whose folder sits in another group
-  (`src/core/identity.ts`). A stale pid-keyed record (dead session, reused pid) is dropped once, when
-  a new pid-keyed server starts and before it connects (`dropStaleHost`): no heartbeat for 15 s =
-  stale. Not on read (a read-time age check would drop a live record after a suspend).
-- Liveness (`src/core/heartbeat.ts`): every server touches `<group>/<uuid>/.heartbeat` (mtime) every
-  5 s for the agents it serves (its `<harness>-<ppid>` key; for Codex every thread seen in a call),
-  and on every tool call and join (`beatCaller` in `src/flows/context.ts`). `alive` = beat at most 15 s
-  old, else `false`; OpenCode is always `"unknown"`. `agent.json.pid` is informational (kept because
-  older servers require the field). Every write of an existing `agent.json` goes through
+- Identity is read from `<root>/.hosts/<hostKey>.json` on every call and never cached; a read repairs
+  a record whose folder sits in another group (`src/core/identity.ts`). Records never go stale; only
+  `summit_bye` deletes one.
+- Liveness (`src/core/heartbeat.ts`): every server `utimes` `<root>/.alive/<hostKey>.json` every 2 s and
+  on every call (`beatCaller` in `src/flows/context.ts`): claude/omp the current session from the
+  session file each tick, pi its env session, codex every thread a call registered, opencode none.
+  `alive` = beat ≤ 10 s old (or future) → true, older → false, never beaten → "unknown", OpenCode always
+  "unknown". A "gone" decision (forced takeover, lock break) takes the second look (`confirmGone`, 2.5 s;
+  any mtime change = alive). A name takeover needs `force` for every holder that is not alive now.
+  `agent.json.pid` is informational. Every write of an existing `agent.json` goes through
   `updateAgent` (`src/core/agents.ts`). `summit_group` holds the new group's `members.lock` from the
   name claim until the folder has moved, so a map entry whose uuid has no folder in that group is
   always a leftover: it is free and every claim drops it. The same hold covers the old group's lock
@@ -61,8 +69,9 @@ npm run dev -- <args>   # run the CLI from source with tsx
   rename never leaves `agent.json` and the new map with different names. Undoing a claim (failed move,
   or a rename whose folder left) goes through `restoreHolder` in `src/flows/rename.ts`.
 - A lock is a lease (owner line `<token> <ISO time>`): `withLock` refreshes the lock's mtime every 2 s
-  while it holds it (`src/core/lease.ts`); stale = not refreshed for 10 s, or a token this process
-  abandoned. Breakers are serialized by `<lock>.break` (`src/core/lock.ts`, SPEC §5). Renames go through
+  while it holds it, for at most `LOCK_MAX_HOLD_MS` = 60 s (`src/core/lease.ts`); stale = not refreshed
+  for 10 s and confirmed by the second look, or a token this process abandoned. Breakers are
+  serialized by `<lock>.break` (`src/core/lock.ts`, SPEC §5). Renames go through
   `renameRetry` (`src/core/fsx.ts`), which retries EPERM/EBUSY/EACCES (Windows) and never reports a
   failed rename as done.
 - Claude Code sends `server/discover` before `initialize`. The SDK answers -32601 and goes on (an
@@ -70,14 +79,15 @@ npm run dev -- <args>   # run the CLI from source with tsx
 - Claude hooks:
     - Exec form in hooks.json (`command` = node, `args` = [cli, "hook", sub]): no shell on any OS, so
       the hook's ppid is claude. Follows the Claude Code docs; not yet run live on any OS.
-    - The signal is keyed by the claude pid. The hook takes `$CLAUDE_PID`, else its ppid.
+    - SessionStart records the session (pid from `$CLAUDE_PID`, else its ppid) and arms
+      `.wake/claude-<sessionId>.signal`; FileChanged reads the session file to find the current signal.
     - FileChanged has no matcher. It sets `asyncRewake: true` and `timeout: 20`. It exits 0 when
       nothing is unread, else it prints the notice on stderr and exits 2.
     - FileChanged never prints `watchPaths`, because that replaces the watch list.
     - Never use `rewakeMessage` or `rewakeSummary`. They are internal fields.
     - Hooks log to the file only. Claude shows hook stderr to the model.
-- pi needs `exposure: "direct"` in mcp.json, or the model never sees the tools. OMP has no
-  `registerMcpServer` and no `omp mcp add`.
+- pi needs `exposure: "direct"` on the server the extension registers, or the model never sees the
+  tools. OMP has no `registerMcpServer` and no `omp mcp add` (it keeps the mcp.json entry).
 - The pi and OMP wake shapes are different:
     - pi when idle: parent-wake (a custom message, then a steer user line, with a 10 s dedupe).
     - pi when busy: a followUp.
@@ -117,9 +127,10 @@ these has exactly one implementation:
 | agent.json update   | `updateAgent` in `src/core/agents.ts`                           |
 | Group lock          | `lockGroup` (`lockGroups` for several) in `src/core/members.ts` |
 | Claim undo          | `restoreHolder` in `src/flows/rename.ts`                        |
-| Agent liveness      | `src/core/heartbeat.ts`, `isAlive` in `src/core/agents.ts`      |
+| Heartbeat, 2nd look | `src/core/heartbeat.ts`, `isAlive` in `src/core/agents.ts`      |
 | Project root key    | `normalizeRootPath` in `src/core/project.ts`                    |
-| Pid-keyed harnesses | `PID_KEYED_HARNESSES` in `src/core/hostKey.ts`                  |
+| Session harnesses   | `SIGNAL_HARNESSES`, `SESSION_FILE_HARNESSES` in `hostKey.ts`    |
+| Session files       | `src/core/sessions.ts` (`writeSession`, `readSession`)          |
 | File read/write     | `src/core/fsx.ts` (`readTextFile`, `pathExists`, JSON)          |
 | CLI arguments       | `src/cli/args.ts`                                               |
 | Product name        | `SUMMIT_NAME` in `src/core/schemas.ts`                          |
@@ -133,10 +144,12 @@ the CLI, and it checks the CLI output by hand (`parseArmed`), because it cannot 
 has no copy of the spawn door either: it starts only the node `.exe` with the CLI, and every other
 command runs inside the CLI through `src/core/exec.ts`.
 
-Test helpers are portable: no `sleep`, `true`, `sh` or procfs. Host pids of in-process callers come
-from `fakePid()`; a dead host is `ageHeartbeat(folder, ms)`; a distinct ppid for a real CLI or server
-comes from the Node parent of `cliCommand(..., viaParent)`; a fake CLI is `fakeBin` (a `.cmd` shim on
-Windows). Signal tests skip on Windows (a signal there terminates at once).
+Test helpers are portable: no `sleep`, `true`, `sh` or procfs. `callFor(root, harness, { session,
+hostPid })` records the session as the host side would (session file or pi env); host pids come from
+`fakePid()`; an ended session is `ageBeat(root, hostKey, ms)`; a distinct ppid for a real CLI or server
+comes from the Node parent of `cliCommand(..., viaParent)` (`McpProc.start` writes the session file for
+that parent); a fake CLI is `fakeBin` (a `.cmd` shim on Windows). Signal tests skip on Windows (a
+signal there terminates at once).
 
 ## Never install into the real home in tests
 
