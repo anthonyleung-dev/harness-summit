@@ -40,11 +40,11 @@ You can use any subset of the five harnesses above. `install` sets up only the o
 
 - Node.js 22 or later.
 
-Verified live: Linux only (every wake path above, with real sessions). macOS and Windows are verified
-by CI only (build, typecheck and the full test suite on `macos-latest` and `windows-latest`, Node 22
-and 24); no harness session has run on them yet. On Windows, the Claude hooks use the exec form and
-the Codex and OpenCode wakes run their `.cmd` shims through `cmd.exe`; both follow the docs and the
-tests, not a live run.
+Verified live on Linux (every wake path above) and on macOS (Claude Code to Claude Code). Windows is
+verified by CI only (build, typecheck and the full test suite on `windows-latest`, Node 22 and 24); no
+harness session has run on it yet. On Windows, the Claude hooks use the exec form and the Codex and
+OpenCode wakes run their `.cmd` shims through `cmd.exe`; both follow the docs and the tests, not a
+live run.
 
 ## Quick start
 
