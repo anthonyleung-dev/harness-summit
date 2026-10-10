@@ -139,11 +139,16 @@ function installExitHandlers(harness: Harness, stopHeartbeat: () => void): void 
 // Runs before the transport connects, so no tool call sees a record the check would drop.
 export async function startServing(root: string, harness: Harness): Promise<() => void> {
     if (isPidKeyed(harness)) {
-        const hostKey = hostKeyForPid(harness, process.ppid)
-        await dropStaleHost(root, hostKey).catch((err) =>
-            log('warn', 'startServing', 'stale host check failed; record kept', { hostKey, error: String(err) }),
-        )
-        serveHostKey(hostKey)
+        try {
+            const hostKey = hostKeyForPid(harness, process.ppid)
+            await dropStaleHost(root, hostKey).catch((err) =>
+                log('warn', 'startServing', 'stale host check failed; record kept', { hostKey, error: String(err) }),
+            )
+            serveHostKey(hostKey)
+        } catch (err) {
+            // No usable host pid (ppid 0): every tool call fails with SUMMIT_NO_HOST_KEY anyway.
+            log('error', 'startServing', 'no host key for this server', { ppid: process.ppid, error: String(err) })
+        }
     }
     return startHeartbeat(root)
 }

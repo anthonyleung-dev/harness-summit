@@ -25,6 +25,7 @@ import {
     foldersOf,
     mapOf,
     onMapRead,
+    fileAge,
     patchAgentJson,
     writeMap,
 } from '../helpers/state.js'
@@ -226,7 +227,7 @@ describe('group move under the group lock', () => {
                 // As if the move had held the lock for a minute: its lease refresh makes it fresh again,
                 // so a waiter never breaks it.
                 ageFile(membersLock(root, 'g2'), LOCK_STALE_MS * 6)
-                await until(() => Date.now() - fs.statSync(membersLock(root, 'g2')).mtimeMs < LOCK_STALE_MS, 6_000)
+                await until(() => fileAge(membersLock(root, 'g2')) < LOCK_STALE_MS, 6_000)
                 renaming = errorCode(rename(b, 'x'))
                 await sleep(300)
                 expect(agentJson(agentDir(root, 'g2', jb.uuid)).name).toBeNull()

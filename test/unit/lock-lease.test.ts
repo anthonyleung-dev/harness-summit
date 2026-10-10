@@ -9,10 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { LEASE_REFRESH_MS, refreshLease } from '../../src/core/lease.js'
 import { breakStaleLock, LOCK_STALE_MS, sleep, withLock } from '../../src/core/lock.js'
 import { tmpDir, until } from '../helpers/env.js'
-import { ageFile, writeLockFile } from '../helpers/state.js'
-
-// Purpose: age in ms of the file at `file`.
-const ageOf = (file: string) => Date.now() - fs.statSync(file).mtimeMs
+import { ageFile, fileAge, writeLockFile } from '../helpers/state.js'
 
 describe('lock lease', () => {
     afterEach(() => {
@@ -25,7 +22,7 @@ describe('lock lease', () => {
             const content = fs.readFileSync(lock, 'utf8')
             // As if the hold had lasted a minute: only the refresh can make the lock fresh again.
             ageFile(lock, LOCK_STALE_MS * 6)
-            await until(() => ageOf(lock) < LOCK_STALE_MS, LEASE_REFRESH_MS * 3)
+            await until(() => fileAge(lock) < LOCK_STALE_MS, LEASE_REFRESH_MS * 3)
             expect(await breakStaleLock(lock, content)).toBe(false)
             expect(fs.readFileSync(lock, 'utf8')).toBe(content)
         })
@@ -50,9 +47,9 @@ describe('lock lease', () => {
         const lock = path.join(tmpDir('token'), 'x.lock')
         writeLockFile(lock, 'theirs', { ageMs: LOCK_STALE_MS * 2 })
         expect(await refreshLease(lock, 'mine')).toBe('lost')
-        expect(ageOf(lock)).toBeGreaterThan(LOCK_STALE_MS)
+        expect(fileAge(lock)).toBeGreaterThan(LOCK_STALE_MS)
         expect(await refreshLease(lock, 'theirs')).toBe('refreshed')
-        expect(ageOf(lock)).toBeLessThan(LOCK_STALE_MS)
+        expect(fileAge(lock)).toBeLessThan(LOCK_STALE_MS)
         expect(await refreshLease(path.join(tmpDir('none'), 'x.lock'), 'mine')).toBe('gone')
     })
 

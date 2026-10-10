@@ -106,6 +106,11 @@ export function ageHeartbeat(folder: string, ageMs: number): void {
     ageFile(file, ageMs)
 }
 
+// Purpose: age in ms of the file at `file` (time since its mtime).
+export function fileAge(file: string): number {
+    return Date.now() - fs.statSync(file).mtimeMs
+}
+
 // Purpose: move the mtime of `file` `ageMs` into the past.
 export function ageFile(file: string, ageMs: number): void {
     const when = (Date.now() - ageMs) / 1000
