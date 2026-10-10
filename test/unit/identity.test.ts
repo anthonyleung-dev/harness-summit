@@ -1,78 +1,97 @@
-// Unit tests for identity repair: a stale host record after pid reuse, found by heartbeat age when a new
-// server starts (REVIEW m8, SPEC §3), and a host record left behind by a group move that stopped after
-// the folder moved (REVIEW M1).
+// Unit tests for identity (SPEC §3): the host key follows the harness session, so a session resumed in a
+// new process (any time later) gets its agent back, `/clear` and `/new` start a new agent, and a host
+// whose session was never recorded fails with SUMMIT_NO_HOST_KEY. Also: a host record left behind by a
+// group move that stopped after the folder moved (REVIEW M1).
 import fs from 'node:fs'
 import path from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { HEARTBEAT_STALE_MS } from '../../src/core/heartbeat.js'
-import { dropStaleHost, readHost } from '../../src/core/identity.js'
+import { STALE_MS } from '../../src/core/heartbeat.js'
+import { readHost } from '../../src/core/identity.js'
 import { readMembers } from '../../src/core/members.js'
 import { noticeForHostKey } from '../../src/core/notice.js'
-import { heartbeatFile } from '../../src/core/paths.js'
 import { join } from '../../src/flows/join.js'
 import { members, whoami } from '../../src/flows/query.js'
 import { read } from '../../src/flows/read.js'
 import { rename } from '../../src/flows/rename.js'
 import { send } from '../../src/flows/send.js'
-import { callFor, codexMeta, errorCode, tmpRoot } from '../helpers/env.js'
-import { ageHeartbeat, moveFolder } from '../helpers/state.js'
+import { callFor, errorCode, fakePid, tmpRoot } from '../helpers/env.js'
+import { ageBeat, moveFolder, writeSessionFile } from '../helpers/state.js'
 
-describe('stale host record (pid reuse), checked when a new server starts', () => {
+describe('identity follows the harness session', () => {
     let root: string
     beforeEach(() => {
         root = tmpRoot()
     })
 
-    it('a record whose agent nobody beat for 15 s is dropped; the new host is not joined', async () => {
-        const call = callFor(root, 'claude')
+    for (const harness of ['claude', 'pi', 'omp'] as const) {
+        it(`${harness}: a session resumed in a new process (much later) gets its agent, name and mail back`, async () => {
+            const first = callFor(root, harness, { session: `S-${harness}` })
+            const sender = callFor(root, 'claude')
+            const j = await join(first)
+            await rename(first, `n-${harness}`)
+            await join(sender)
+            await send(sender, { to: j.uuid, message: 'while you were away' })
+            // The session ended an hour ago; a new process (another pid) resumes it.
+            ageBeat(root, j.hostKey, 60 * 60 * 1000)
+            const resumed = callFor(root, harness, { session: `S-${harness}` })
+            expect(resumed.hostPid).not.toBe(first.hostPid)
+            expect(await whoami(resumed)).toMatchObject({ joined: true, uuid: j.uuid, name: `n-${harness}` })
+            expect((await read(resumed)).messages.map((m) => m.body)).toEqual(['while you were away'])
+        })
+    }
+
+    it('claude /clear and omp /new (same process, new session id) start a new agent; the old one stays', async () => {
+        for (const harness of ['claude', 'omp'] as const) {
+            const hostPid = fakePid()
+            const before = callFor(root, harness, { hostPid, session: `old-${harness}` })
+            const old = await join(before)
+            // The SessionStart hook (or the OMP extension) records the new session for the same process.
+            writeSessionFile(root, harness, hostPid, `new-${harness}`)
+            expect(await whoami(before)).toEqual({ joined: false, hostKey: `${harness}-new-${harness}` })
+            const fresh = await join(before)
+            expect(fresh.uuid).not.toBe(old.uuid)
+            expect(await readHost(root, old.hostKey)).toMatchObject({ uuid: old.uuid })
+            expect(fs.existsSync(old.folder)).toBe(true)
+        }
+    })
+
+    it('a host whose session was never recorded fails with SUMMIT_NO_HOST_KEY and says why', async () => {
+        const claude = { ...callFor(root, 'claude'), hostPid: fakePid() }
+        const err = await join(claude).catch((e: { code: string; message: string }) => e)
+        expect(err).toMatchObject({ code: 'SUMMIT_NO_HOST_KEY', message: expect.stringContaining('plugin hooks') })
+        const pi = { ...callFor(root, 'pi'), sessionEnv: undefined }
+        expect(await errorCode(whoami(pi))).toBe('SUMMIT_NO_HOST_KEY')
+        const omp = { ...callFor(root, 'omp'), hostPid: fakePid() }
+        expect(await errorCode(read(omp))).toBe('SUMMIT_NO_HOST_KEY')
+    })
+
+    it('a reused pid finds only the session its own host recorded, never the dead session before it', async () => {
+        const hostPid = fakePid()
+        const dead = callFor(root, 'claude', { hostPid, session: 'S-dead' })
+        const old = await join(dead)
         const sender = callFor(root, 'claude')
-        const old = await join(call)
         await join(sender)
-        await send(sender, { to: old.uuid, message: 'for the dead session' })
-        // The old session's server exited 20 s ago; a new claude got the same pid and starts its server.
-        ageHeartbeat(old.folder, HEARTBEAT_STALE_MS + 5_000)
-        expect(await dropStaleHost(root, old.hostKey)).toBe(true)
-        expect(await whoami(call)).toEqual({ joined: false, hostKey: old.hostKey })
-        expect(await noticeForHostKey(root, old.hostKey)).toBeNull()
-        expect(await errorCode(read(call))).toBe('SUMMIT_NOT_JOINED')
-        const fresh = await join(call)
-        expect(fresh.uuid).not.toBe(old.uuid)
-        expect((await read(call)).count).toBe(0)
+        await send(sender, { to: old.uuid, message: 'for the dead session only' })
+        // A new claude got the same pid; its SessionStart hook rewrote the session file at startup.
+        const reborn = callFor(root, 'claude', { hostPid, session: 'S-reborn' })
+        expect(await whoami(reborn)).toEqual({ joined: false, hostKey: 'claude-S-reborn' })
+        expect(await errorCode(read(reborn))).toBe('SUMMIT_NOT_JOINED')
+        expect(await noticeForHostKey(root, 'claude-S-reborn')).toBeNull()
+        expect(await noticeForHostKey(root, old.hostKey)).not.toBeNull()
     })
 
-    it('a record without any heartbeat (joined by a server before heartbeats) is dropped too', async () => {
-        const call = callFor(root, 'pi')
-        const j = await join(call)
-        fs.rmSync(heartbeatFile(j.folder))
-        expect(await dropStaleHost(root, j.hostKey)).toBe(true)
-        expect(await readHost(root, j.hostKey)).toBeNull()
-    })
-
-    it('a record beaten within 15 s stays (pi restarts its server on /new; known limit: a pid reused that fast)', async () => {
-        const call = callFor(root, 'omp')
-        const j = await join(call)
-        ageHeartbeat(j.folder, HEARTBEAT_STALE_MS - 5_000)
-        expect(await dropStaleHost(root, j.hostKey)).toBe(false)
-        expect(await whoami(call)).toMatchObject({ joined: true, uuid: j.uuid })
-    })
-
-    it('Codex and OpenCode keys hold no pid and are never dropped by the start check', async () => {
-        const cx = callFor(root, 'codex', { meta: codexMeta('T-keep') })
-        const j = await join(cx)
-        ageHeartbeat(j.folder, HEARTBEAT_STALE_MS * 4)
-        expect(await dropStaleHost(root, j.hostKey)).toBe(false)
-        expect(await readHost(root, j.hostKey)).toMatchObject({ uuid: j.uuid })
-    })
-
-    it('members marks an agent whose heartbeat is older than 15 s as not alive', async () => {
+    it('members reports alive from the heartbeat of the session key: true, false after 10 s, unknown never beaten', async () => {
         const a = callFor(root, 'claude')
         const b = callFor(root, 'claude')
         await join(a)
         const jb = await join(b)
-        expect((await members(a)).members.find((x) => x.uuid === jb.uuid)?.alive).toBe(true)
-        ageHeartbeat(jb.folder, HEARTBEAT_STALE_MS + 1_000)
-        expect((await members(a)).members.find((x) => x.uuid === jb.uuid)?.alive).toBe(false)
+        const aliveOfB = async () => (await members(a)).members.find((x) => x.uuid === jb.uuid)?.alive
+        expect(await aliveOfB()).toBe(true)
+        ageBeat(root, jb.hostKey, STALE_MS + 1_000)
+        expect(await aliveOfB()).toBe(false)
+        fs.rmSync(path.join(root, '.alive', `${jb.hostKey}.json`))
+        expect(await aliveOfB()).toBe('unknown')
     })
 })
 

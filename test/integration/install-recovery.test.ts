@@ -6,8 +6,10 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { HARNESSES } from '../../src/core/schemas.js'
+import { BACKUP_SUFFIX } from '../../src/install/actions.js'
+import { setJsonKey } from '../../src/install/edits.js'
 import { opencodeConfigPath, runInstall, runUninstall } from '../../src/install/install.js'
-import { stateFile } from '../../src/install/state.js'
+import { sha, stateFile } from '../../src/install/state.js'
 import { errorCode, recordingExec, seededHome, snapshot } from '../helpers/env.js'
 
 const launch = {
@@ -28,9 +30,8 @@ describe('install that fails half way', () => {
         expect(await errorCode(runInstall(opts))).toBe('SUMMIT_INSTALL_CONFLICT')
         const state = JSON.parse(fs.readFileSync(stateFile(home), 'utf8'))
         expect(state.execs).toEqual({ 'claude-marketplace': true, 'claude-plugin': true })
-        expect(Object.keys(state.edits).map((f) => path.relative(home, f))).toEqual([
+        expect(Object.keys(state.edits).map((f) => path.relative(home, f).split(path.sep).join('/'))).toEqual([
             '.codex/config.toml',
-            '.pi/agent/mcp.json',
             '.omp/agent/mcp.json',
         ])
 
@@ -93,11 +94,43 @@ describe('OpenCode registration', () => {
             'SUMMIT_OPENCODE_BIN=/opt/bin/opencode',
             'harness-summit',
         ])
-        const pi = JSON.parse(fs.readFileSync(path.join(home, '.pi/agent/mcp.json'), 'utf8')).mcpServers[
-            'harness-summit'
-        ]
-        expect(pi.env).toEqual(launch.env)
+        // pi: the extension registers the server, with the harness CLI paths in its env.
+        const ext = fs.readFileSync(path.join(home, '.pi/agent/extensions/harness-summit.ts'), 'utf8')
+        expect(ext).toContain(`"env":${JSON.stringify(launch.env)}`)
         const mcp = path.join(home, '.local/share/harness-summit/claude-marketplace/claude/.mcp.json')
         expect(JSON.parse(fs.readFileSync(mcp, 'utf8')).mcpServers['harness-summit'].env).toEqual(launch.env)
+    })
+})
+
+describe('upgrade from an install that registered pi in mcp.json', () => {
+    // Purpose: put the home in the state an older install left: the pi mcp.json key, its backup, and the
+    // edit record in the install state.
+    function olderPiInstall(home: string): { file: string; original: string } {
+        const file = path.join(home, '.pi/agent/mcp.json')
+        const original = fs.readFileSync(file, 'utf8')
+        const edited = setJsonKey(original, ['mcpServers', 'harness-summit'], { command: 'node' }, file)
+        fs.writeFileSync(file + BACKUP_SUFFIX, original)
+        fs.writeFileSync(file, edited)
+        const state = { version: 1, files: {}, dirs: [], execs: {}, edits: {} as Record<string, unknown> }
+        state.edits[file] = { existed: true, preSha: sha(original), postSha: sha(edited) }
+        fs.mkdirSync(path.dirname(stateFile(home)), { recursive: true })
+        fs.writeFileSync(stateFile(home), JSON.stringify(state))
+        return { file, original }
+    }
+
+    it('install retires the old pi entry (a same-name entry would win over the extension)', async () => {
+        const home = seededHome()
+        const { file, original } = olderPiInstall(home)
+        await runInstall({ harnesses: ['pi'], home, dryRun: false, exec: recordingExec(), launch })
+        expect(fs.readFileSync(file, 'utf8')).toBe(original)
+        expect(fs.existsSync(file + BACKUP_SUFFIX)).toBe(false)
+        expect(JSON.parse(fs.readFileSync(stateFile(home), 'utf8')).edits[file]).toBeUndefined()
+    })
+
+    it('uninstall without a re-install retires it too', async () => {
+        const home = seededHome()
+        const { file, original } = olderPiInstall(home)
+        await runUninstall({ harnesses: ['pi'], home, dryRun: false, exec: recordingExec(), launch })
+        expect(fs.readFileSync(file, 'utf8')).toBe(original)
     })
 })

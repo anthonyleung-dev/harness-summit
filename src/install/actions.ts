@@ -1,5 +1,7 @@
 // Install actions and their exact reversal. Kinds: an owned file, an edit of a user file (in-process
-// text edit, or an external command that edits it), and an external command with an undo command.
+// text edit, or an external command that edits it), an external command with an undo command, and a
+// retired edit (an edit an older install made and this version no longer wants: install and uninstall
+// both undo it when the state still records it).
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
@@ -22,6 +24,7 @@ export type Action =
           revert: (text: string, original: string | null) => string
       }
     | { kind: 'exec'; id: string; run: ExecRequest; undo: ExecRequest }
+    | { kind: 'retire'; path: string; what: string; revert: (text: string, original: string | null) => string }
 
 export interface ActionEnv {
     state: InstallState
@@ -113,6 +116,7 @@ export async function applyAction(a: Action, env: ActionEnv): Promise<void> {
     log('info', 'applyAction', a.kind, { target: a.kind === 'exec' ? a.id : a.path, dryRun: env.dryRun })
     if (a.kind === 'file') return await applyFile(a, env)
     if (a.kind === 'edit') return await applyEdit(a, env)
+    if (a.kind === 'retire') return await revertEdit({ ...a, kind: 'edit' }, env)
     return await applyExec(a, env)
 }
 
@@ -170,7 +174,7 @@ async function revertExec(a: Extract<Action, { kind: 'exec' }>, env: ActionEnv):
 export async function revertAction(a: Action, env: ActionEnv): Promise<void> {
     log('info', 'revertAction', a.kind, { target: a.kind === 'exec' ? a.id : a.path, dryRun: env.dryRun })
     if (a.kind === 'file') return await revertFile(a, env)
-    if (a.kind === 'edit') return await revertEdit(a, env)
+    if (a.kind === 'edit' || a.kind === 'retire') return await revertEdit({ ...a, kind: 'edit' }, env)
     return await revertExec(a, env)
 }
 

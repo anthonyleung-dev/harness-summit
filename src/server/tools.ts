@@ -29,13 +29,17 @@ function defineTool<I extends z.ZodObject, O extends z.ZodObject>(def: ToolDef<I
 const Empty = z.object({})
 const Alive = z.union([z.boolean(), z.literal('unknown')])
 // The `force` input of summit_rename and summit_group (one rule, F8): take a name over from a holder
-// whose liveness is unknown.
-const FORCE_RULE = 'force takes over a name whose holder has unknown liveness (OpenCode).'
-const Force = z.boolean().optional().describe('Take over the name even when its holder may be alive')
+// that is not alive now (its session may resume later, so this never happens without force).
+const FORCE_RULE =
+    'force takes over a name whose holder is not alive now (alive false or unknown); a live holder always keeps it.'
+const Force = z
+    .boolean()
+    .optional()
+    .describe('Take over the name from a holder that is not alive now (its session may still resume)')
 // A takeover in a summit_rename or summit_group result, with its reason (O1).
 const TakeoverOutput = TakeoverSchema.nullable().describe(
     'The name was taken over: from = the old holder, reason = holder-gone (no server kept it alive) or ' +
-        'forced-unknown (liveness unknown, force given). null when the name was free',
+        'forced-unknown (liveness unknown); both need force. null when the name was free',
 )
 
 export const JoinOutput = z.object({

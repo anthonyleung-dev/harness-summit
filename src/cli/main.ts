@@ -19,7 +19,8 @@ const USAGE = `usage: harness-summit <command>
   mcp --harness <claude|codex|pi|omp|opencode>   run the MCP stdio server
   hook claude-session-start                      Claude Code SessionStart hook (stdin JSON)
   hook claude-file-changed                       Claude Code FileChanged hook (stdin JSON)
-  hook ext-arm --harness <pi|omp> --pid <pid>    arm the pi/OMP extension's signal file
+  hook ext-arm --harness <pi|omp> --session <id> [--pid <pid>]
+                                                 record the session (omp) and arm its signal file
   notice --host-key <key>                        print the unread notice (empty when none)
   install --harness <list|all> [--dry-run] [--home <dir>]
   uninstall --harness <list|all> [--dry-run] [--home <dir>]
@@ -59,7 +60,10 @@ async function runHook(args: CliArgs): Promise<void> {
         const harness = parseHarness(args.harness, 'runHook')
         if (harness !== 'pi' && harness !== 'omp')
             throw summitError('SUMMIT_BAD_INPUT', 'ext-arm is for pi or omp', 'runHook', { harness })
-        return emit(await extArm(harness, parsePid(args.pid), he.root))
+        if (args.session === undefined || args.session === '')
+            throw summitError('SUMMIT_BAD_INPUT', 'ext-arm needs --session <id>', 'runHook', { harness })
+        const pid = args.pid === undefined ? null : parsePid(args.pid)
+        return emit(await extArm(harness, args.session, pid, he.root))
     }
     throw summitError('SUMMIT_BAD_INPUT', `unknown hook ${args.sub}`, 'runHook', { sub: args.sub })
 }

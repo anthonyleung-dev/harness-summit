@@ -63,8 +63,8 @@ export const MembersSchema = z.object({
 })
 export type Members = z.infer<typeof MembersSchema>
 
-// Why a name claim took a name over (O1): its holder was gone (`alive: false`), or its liveness was
-// unknown and the caller passed force. summit_rename and summit_group return it, so a model reports
+// Why a name claim took a name over (O1), always with force: its holder was gone (`alive: false`, confirmed
+// by the second look), or its liveness was unknown. summit_rename and summit_group return it, so a model reports
 // the real reason and never guesses it.
 export const TAKEOVER_REASONS = ['holder-gone', 'forced-unknown'] as const
 export const TakeoverReasonSchema = z.enum(TAKEOVER_REASONS)

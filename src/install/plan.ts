@@ -129,12 +129,22 @@ function codexPlan(p: PlanInput): Action[] {
     ]
 }
 
-// Purpose: pi or OMP: mcp.json key, the shared extension, command files.
+// Purpose: pi or OMP: the server registration, the shared extension, command files. OMP: an mcp.json key.
+// pi: no mcp.json key, because the extension registers the server itself with the session id in its env
+// (SPEC §3); an mcp.json entry of the same name would win, so the one an older install wrote is retired.
 function piLikePlan(p: PlanInput, harness: 'pi' | 'omp'): Action[] {
     const reg = registrationFor(p.home, harness, p.opencodeConfig)
-    const server = { ...mcpLaunch(p.launch, harness), ...(harness === 'pi' ? { exposure: 'direct' } : {}) }
+    const registration: Action =
+        harness === 'pi'
+            ? {
+                  kind: 'retire',
+                  path: reg.file,
+                  what: reg.keyPath.join('.'),
+                  revert: (t, original) => removeJsonKey(t, reg.keyPath, original, reg.file),
+              }
+            : jsonKeyEdit(reg.file, reg.keyPath, mcpLaunch(p.launch, harness))
     return [
-        jsonKeyEdit(reg.file, reg.keyPath, server),
+        registration,
         {
             kind: 'file',
             path: path.join(path.dirname(reg.file), 'extensions', 'harness-summit.ts'),

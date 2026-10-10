@@ -1,16 +1,22 @@
-// Lease refresh of a held lock file (SPEC §5). While a holder runs its critical section, a timer sets the
-// lock file's mtime to now every LEASE_REFRESH_MS. A waiter treats a lock as stale only when its mtime is
-// older than LOCK_STALE_MS (src/core/lock.ts), so a live holder keeps its lock however long it holds it
-// (a group move that waits for a `.cursor.lock`), and a holder that died stops refreshing and loses it.
-// No OS process inspection: the file's mtime is the only signal, on every OS.
+// Lease refresh of a held lock file (SPEC §5, XPLAT-AUDIT §H). While a holder runs its critical section,
+// a timer sets the lock file's mtime to now every LEASE_REFRESH_MS. A waiter treats a lock as stale only
+// when its mtime is older than LOCK_STALE_MS and a second look confirms it (src/core/lock.ts), so a live
+// holder keeps its lock while it works (a group move that waits for a `.cursor.lock`), and a holder that
+// died stops refreshing and loses it. The timer stops after LOCK_MAX_HOLD_MS, so a holder that hangs while
+// its timer still runs loses its lock about LOCK_STALE_MS later instead of blocking everyone forever. No
+// OS process inspection: the file's mtime is the only signal, on every OS.
 import fs from 'node:fs/promises'
 
 import { hasErrno } from './errors.js'
 import { readTextFile } from './fsx.js'
+import { BEAT_MS } from './heartbeat.js'
 import { log } from './log.js'
 
-// How often a holder refreshes its lock. Five refreshes fit in one LOCK_STALE_MS.
-export const LEASE_REFRESH_MS = 2_000
+// How often a holder refreshes its lock (the heartbeat period). Five refreshes fit in one LOCK_STALE_MS.
+export const LEASE_REFRESH_MS = BEAT_MS
+// The longest a holder keeps refreshing. The longest legal hold is a group move that waits up to the
+// 15 s lock timeout for a `.cursor.lock`; 60 s is four times that.
+export const LOCK_MAX_HOLD_MS = 60_000
 
 // The outcome of one lease refresh.
 export type LeaseState = 'refreshed' | 'gone' | 'lost' | 'failed'
@@ -33,14 +39,26 @@ export async function refreshLease(lockPath: string, token: string, now = new Da
     }
 }
 
-// Purpose: start refreshing the lease of `lockPath` (held with `token`) every `everyMs`. Returns the stop
-// function. The timer is unref'd, so it never keeps a process alive, and two refreshes never overlap.
-// A lost lease is logged once as an error: the holder kept running past LOCK_STALE_MS without a refresh
-// (an event-loop stall or a suspend), and a waiter took the lock.
-export function startLease(lockPath: string, token: string, everyMs = LEASE_REFRESH_MS): () => void {
+// Purpose: start refreshing the lease of `lockPath` (held with `token`) every `everyMs`, for at most
+// `maxHoldMs`. Returns the stop function. The timer is unref'd, so it never keeps a process alive, and
+// two refreshes never overlap. A lost lease is logged once as an error: the holder kept running past
+// LOCK_STALE_MS without a refresh (an event-loop stall, a suspend, or a hold past LOCK_MAX_HOLD_MS), and a
+// waiter took the lock.
+export function startLease(
+    lockPath: string,
+    token: string,
+    everyMs = LEASE_REFRESH_MS,
+    maxHoldMs = LOCK_MAX_HOLD_MS,
+): () => void {
     let busy = false
     let reported = false
+    const until = Date.now() + maxHoldMs
     const timer = setInterval(() => {
+        if (Date.now() > until) {
+            clearInterval(timer)
+            log('error', 'startLease', 'held longer than LOCK_MAX_HOLD_MS; lease no longer refreshed', { lockPath })
+            return
+        }
         if (busy) return
         busy = true
         refreshLease(lockPath, token)

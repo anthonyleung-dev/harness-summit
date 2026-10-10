@@ -4,7 +4,7 @@ import path from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { SUMMIT_GUIDANCE } from '../../src/core/notice.js'
-import { heartbeatFile } from '../../src/core/paths.js'
+import { aliveFile } from '../../src/core/paths.js'
 import { bye } from '../../src/flows/bye.js'
 import { group } from '../../src/flows/group.js'
 import { join } from '../../src/flows/join.js'
@@ -25,10 +25,10 @@ describe('flows', () => {
 
     it('join is idempotent per host key, records the SPEC §4 agent.json and returns the guidance', async () => {
         const pid = fakePid()
-        const call = callFor(root, 'pi', { ppid: pid })
+        const call = callFor(root, 'pi', { hostPid: pid, session: 'S-pi' })
         const first = await join(call)
         const again = await join(call)
-        expect(again).toMatchObject({ uuid: first.uuid, alreadyJoined: true, hostKey: `pi-${pid}` })
+        expect(again).toMatchObject({ uuid: first.uuid, alreadyJoined: true, hostKey: 'pi-S-pi' })
         expect(first).toMatchObject({ alreadyJoined: false, guidance: SUMMIT_GUIDANCE })
         expect(again.guidance).toBe(SUMMIT_GUIDANCE)
         const agent = agentJson(first.folder)
@@ -36,20 +36,20 @@ describe('flows', () => {
             harness: 'pi',
             pid,
             cwdSource: 'process.cwd',
-            wake: { type: 'signal', path: path.join(root, '.wake', `pi-${pid}.signal`) },
+            wake: { type: 'signal', path: path.join(root, '.wake', 'pi-S-pi.signal') },
         })
-        const host = hostJson(root, `pi-${pid}`)!
+        const host = hostJson(root, 'pi-S-pi')!
         expect(Object.keys(host).sort()).toEqual(['groupKey', 'harness', 'hostKey', 'joinedAt', 'uuid'])
         expect(agent).not.toHaveProperty('pidStart')
         // The first heartbeat lands with the join (SPEC §7).
-        expect(fs.existsSync(heartbeatFile(first.folder))).toBe(true)
+        expect(fs.existsSync(aliveFile(root, first.hostKey))).toBe(true)
     })
 
     it('reads identity from disk on every call: deleting the host file un-joins', async () => {
-        const call = callFor(root, 'claude')
+        const call = callFor(root, 'claude', { session: 'S-c' })
         await join(call)
-        fs.rmSync(path.join(root, '.hosts', `${call.harness}-${call.ppid}.json`))
-        expect(await whoami(call)).toEqual({ joined: false, hostKey: `claude-${call.ppid}` })
+        fs.rmSync(path.join(root, '.hosts', 'claude-S-c.json'))
+        expect(await whoami(call)).toEqual({ joined: false, hostKey: 'claude-S-c' })
         expect(await code(read(call))).toBe('SUMMIT_NOT_JOINED')
     })
 

@@ -51,7 +51,7 @@ describe('two claude-style servers (distinct ppids via a Node parent)', () => {
         expect(await a.call('summit_whoami')).toMatchObject({ joined: false })
         const ja = await a.call('summit_join')
         const jb = await b.call('summit_join')
-        expect(ja.hostKey).toMatch(/^claude-\d+$/)
+        expect(ja.hostKey).toBe(`claude-${a.session}`)
         expect(jb.hostKey).not.toBe(ja.hostKey)
         expect(ja.groupKey).toBe(jb.groupKey)
         expect(ja.groupKey).toMatch(/^[0-9a-f]{32}$/)

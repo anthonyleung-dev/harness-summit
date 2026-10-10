@@ -21,13 +21,35 @@ export function hostFile(root: string, hostKey: string): string {
     return path.join(hostsDir(root), `${hostKey}.json`)
 }
 
+// Purpose: directory of the session files: which harness session a host process runs now (SPEC §3).
+export function sessionsDir(root: string): string {
+    return path.join(root, '.sessions')
+}
+
+// Purpose: the session file of one host process (`<root>/.sessions/<harness>-<pid>.json`), written by
+// the Claude SessionStart hook or the OMP extension and read by that host's MCP server.
+export function sessionFile(root: string, harness: string, pid: number): string {
+    return path.join(sessionsDir(root), `${harness}-${pid}.json`)
+}
+
+// Purpose: directory of the heartbeat files, one per host key (SPEC §7). Outside the agent folders: a
+// group move renames an agent folder, and Windows refuses that while a file inside it is open.
+export function aliveDir(root: string): string {
+    return path.join(root, '.alive')
+}
+
+// Purpose: the heartbeat file of one host key; its mtime is the last beat.
+export function aliveFile(root: string, hostKey: string): string {
+    return path.join(aliveDir(root), `${hostKey}.json`)
+}
+
 // Purpose: directory of the wake signal files.
 export function wakeDir(root: string): string {
     return path.join(root, '.wake')
 }
 
 // Purpose: the wake signal file of a signal-type host (claude/pi/omp). The host key already is
-// `<harness>-<pid>`, so the file is `<root>/.wake/<harness>-<pid>.signal`.
+// `<harness>-<sessionId>`, so the file is `<root>/.wake/<harness>-<sessionId>.signal`.
 export function signalPathFor(root: string, hostKey: string): string {
     return path.join(wakeDir(root), `${hostKey}.signal`)
 }
@@ -70,12 +92,6 @@ export function cursorFile(folder: string): string {
 // Purpose: the lock file that serialises summit_read calls of one agent (REVIEW m13).
 export function cursorLock(folder: string): string {
     return path.join(folder, '.cursor.lock')
-}
-
-// Purpose: the liveness heartbeat of an agent folder (its mtime is the last beat of the serving MCP
-// server, SPEC §7).
-export function heartbeatFile(folder: string): string {
-    return path.join(folder, '.heartbeat')
 }
 
 // Purpose: epoch ms of the last wake of an agent (written by the waking sender).

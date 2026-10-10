@@ -1,23 +1,27 @@
 // Acceptance 4: the Claude Code hook commands, fed stdin shaped like probes/claude.md, give the exact
-// stdout / stderr / exit codes of SPEC §6.
+// stdout / stderr / exit codes of SPEC §6, and SessionStart records the session the claude process runs
+// now, which its MCP server reads (SPEC §3).
 import fs from 'node:fs'
 import path from 'node:path'
 import { beforeAll, describe, expect, it } from 'vitest'
 
 import { buildNotice } from '../../src/core/notice.js'
+import { readSession } from '../../src/core/sessions.js'
 import { join } from '../../src/flows/join.js'
+import { whoami } from '../../src/flows/query.js'
 import { read } from '../../src/flows/read.js'
 import { rename } from '../../src/flows/rename.js'
 import { send } from '../../src/flows/send.js'
 import { callFor, runCli, tmpRoot } from '../helpers/env.js'
 
 const CLAUDE_PID = 3009995
+const SID = '1bf60fec-35ac-496b-9fc6-915711f7e85f'
 const notice = buildNotice([{ from: 'alice' }])
 
 // Shapes copied from probes/claude.md (ready-*.txt line 3) and the FileChanged docs.
-const sessionStartInput = (source: string) =>
+const sessionStartInput = (source: string, sessionId = SID) =>
     JSON.stringify({
-        session_id: '1bf60fec-35ac-496b-9fc6-915711f7e85f',
+        session_id: sessionId,
         transcript_path: '/home/x/.claude/projects/p/1bf60fec-35ac-496b-9fc6-915711f7e85f.jsonl',
         cwd: '/tmp/proj',
         hook_event_name: 'SessionStart',
@@ -37,9 +41,9 @@ const fileChangedInput = (filePath: string, event = 'change') =>
 describe('claude hooks', () => {
     const root = tmpRoot()
     const env = { HARNESS_SUMMIT_HOME: root, CLAUDE_PID: String(CLAUDE_PID) }
-    const signal = path.join(root, '.wake', `claude-${CLAUDE_PID}.signal`)
-    const receiver = callFor(root, 'claude', { ppid: CLAUDE_PID })
-    const sender = callFor(root, 'claude', { ppid: CLAUDE_PID + 1 })
+    const signal = path.join(root, '.wake', `claude-${SID}.signal`)
+    const receiver = callFor(root, 'claude', { hostPid: CLAUDE_PID, session: SID })
+    const sender = callFor(root, 'claude')
 
     beforeAll(async () => {
         await join(receiver)
@@ -47,12 +51,15 @@ describe('claude hooks', () => {
         await rename(sender, 'alice')
     })
 
-    it('SessionStart arms the pid-keyed signal and prints only watchPaths when nothing is unread', async () => {
+    it('SessionStart records the session, arms its signal and prints only watchPaths when nothing is unread', async () => {
         const r = await runCli(['hook', 'claude-session-start'], { env, stdin: sessionStartInput('startup') })
         expect(r.code).toBe(0)
         expect(r.stderr).toBe('')
-        expect(r.stdout).toBe(`{"hookSpecificOutput":{"hookEventName":"SessionStart","watchPaths":["${signal}"]}}\n`)
+        expect(r.stdout).toBe(
+            `{"hookSpecificOutput":{"hookEventName":"SessionStart","watchPaths":["${JSON.stringify(signal).slice(1, -1)}"]}}\n`,
+        )
         expect(fs.existsSync(signal)).toBe(true)
+        expect(await readSession(root, 'claude', CLAUDE_PID)).toBe(SID)
     })
 
     it('FileChanged exits 0 with no output when nothing is unread', async () => {
@@ -68,10 +75,10 @@ describe('claude hooks', () => {
         expect(r.stderr).not.toContain('secret body')
     })
 
-    it('SessionStart on /clear re-arms the same path without truncating, and adds the unread notice', async () => {
+    it('SessionStart on resume re-arms the same path without truncating, and adds the unread notice', async () => {
         const before = fs.readFileSync(signal, 'utf8')
         expect(before.length).toBeGreaterThan(0)
-        const r = await runCli(['hook', 'claude-session-start'], { env, stdin: sessionStartInput('clear') })
+        const r = await runCli(['hook', 'claude-session-start'], { env, stdin: sessionStartInput('resume') })
         expect(r.code).toBe(0)
         expect(JSON.parse(r.stdout)).toEqual({
             hookSpecificOutput: { hookEventName: 'SessionStart', watchPaths: [signal], additionalContext: notice },
@@ -95,18 +102,42 @@ describe('claude hooks', () => {
     it('falls back to the hook parent pid when CLAUDE_PID is unset', async () => {
         const r = await runCli(['hook', 'claude-session-start'], {
             env: { HARNESS_SUMMIT_HOME: root, CLAUDE_PID: '' },
-            stdin: sessionStartInput('startup'),
+            stdin: sessionStartInput('startup', 'S-parent'),
             viaParent: true,
         })
         expect(JSON.parse(r.stdout).hookSpecificOutput.watchPaths).toEqual([
-            path.join(root, '.wake', `claude-${r.parentPid}.signal`),
+            path.join(root, '.wake', 'claude-S-parent.signal'),
         ])
+        expect(await readSession(root, 'claude', r.parentPid as number)).toBe('S-parent')
+    })
+
+    it('SessionStart without a session id arms nothing and never fails the session', async () => {
+        const r = await runCli(['hook', 'claude-session-start'], { env, stdin: '{"source":"startup"}' })
+        expect(r).toEqual({ code: 0, stdout: '', stderr: '' })
+        expect(await readSession(root, 'claude', CLAUDE_PID)).toBe(SID)
     })
 
     it('notice CLI prints the notice for a host key, nothing when not joined', async () => {
         await send(sender, { to: (await join(receiver)).uuid, message: 'again' })
-        const r = await runCli(['notice', '--host-key', `claude-${CLAUDE_PID}`], { env })
+        const r = await runCli(['notice', '--host-key', `claude-${SID}`], { env })
         expect(r.stdout).toBe(notice + '\n')
         expect((await runCli(['notice', '--host-key', 'claude-1'], { env })).stdout).toBe('')
+    })
+
+    it('SessionStart on /clear (new session id) moves the server to a new agent; the old one stays', async () => {
+        const r = await runCli(['hook', 'claude-session-start'], {
+            env,
+            stdin: sessionStartInput('clear', 'S-cleared'),
+        })
+        expect(JSON.parse(r.stdout).hookSpecificOutput).toEqual({
+            hookEventName: 'SessionStart',
+            watchPaths: [path.join(root, '.wake', 'claude-S-cleared.signal')],
+        })
+        // The same claude process (same pid) now runs session S-cleared: its server sees a new host key.
+        expect(await whoami(receiver)).toEqual({ joined: false, hostKey: 'claude-S-cleared' })
+        expect((await runCli(['notice', '--host-key', `claude-${SID}`], { env })).stdout).toBe(notice + '\n')
+        // FileChanged on the old session's signal is not ours any more.
+        const old = await runCli(['hook', 'claude-file-changed'], { env, stdin: fileChangedInput(signal) })
+        expect(old).toEqual({ code: 0, stdout: '', stderr: '' })
     })
 })

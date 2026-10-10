@@ -2,10 +2,10 @@
 // with no tool call in between, and the agent reads alive to a second server.
 import { describe, expect, it } from 'vitest'
 
-import { HEARTBEAT_INTERVAL_MS, HEARTBEAT_STALE_MS, heartbeatAge } from '../../src/core/heartbeat.js'
+import { BEAT_MS, beatTime, STALE_MS } from '../../src/core/heartbeat.js'
 import { tmpDir, until } from '../helpers/env.js'
 import { McpProc } from '../helpers/mcp.js'
-import { ageHeartbeat } from '../helpers/state.js'
+import { ageBeat } from '../helpers/state.js'
 
 describe('server heartbeat timer', () => {
     it('beats its joined agent every few seconds without any tool call', async () => {
@@ -17,14 +17,11 @@ describe('server heartbeat timer', () => {
             await b.initialize()
             const ja = await a.call('summit_join')
             await b.call('summit_join')
-            ageHeartbeat(ja.folder, HEARTBEAT_STALE_MS * 4)
+            ageBeat(root, ja.hostKey, STALE_MS * 4)
             const aliveOfA = async () =>
                 (await b.call('summit_members')).members.find((m: { uuid: string }) => m.uuid === ja.uuid).alive
             expect(await aliveOfA()).toBe(false)
-            await until(
-                async () => ((await heartbeatAge(ja.folder)) ?? Infinity) < HEARTBEAT_STALE_MS,
-                HEARTBEAT_INTERVAL_MS * 2,
-            )
+            await until(async () => Date.now() - ((await beatTime(root, ja.hostKey)) ?? 0) < STALE_MS, BEAT_MS * 3)
             expect(await aliveOfA()).toBe(true)
         } finally {
             await a.close()

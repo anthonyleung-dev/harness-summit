@@ -6,7 +6,7 @@ import path from 'node:path'
 import { vi } from 'vitest'
 
 import { formatLockOwner } from '../../src/core/lock.js'
-import { agentDir, groupDir, heartbeatFile, hostFile, membersFile } from '../../src/core/paths.js'
+import { agentDir, aliveFile, groupDir, hostFile, membersFile, sessionFile } from '../../src/core/paths.js'
 
 // Purpose: run `action` once, at the first read of a group's members.json: a parallel call that lands
 // while a flow reads the name map under its lock. Undo with vi.restoreAllMocks().
@@ -98,12 +98,21 @@ export function writeLockFile(file: string, token: string, opts: LockLineOptions
     return content
 }
 
-// Purpose: make the heartbeat of the agent folder `folder` `ageMs` old (its server stopped beating that
-// long ago: the host process is gone). Creates the heartbeat file when it is missing.
-export function ageHeartbeat(folder: string, ageMs: number): void {
-    const file = heartbeatFile(folder)
-    if (!fs.existsSync(file)) fs.writeFileSync(file, '')
+// Purpose: make the heartbeat of `hostKey` `ageMs` old (its server stopped beating that long ago: the
+// session ended). Creates the heartbeat file when it is missing.
+export function ageBeat(root: string, hostKey: string, ageMs: number): void {
+    const file = aliveFile(root, hostKey)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    if (!fs.existsSync(file)) fs.writeFileSync(file, '{}')
     ageFile(file, ageMs)
+}
+
+// Purpose: record that host process `pid` of `harness` runs session `sessionId` now, as the Claude
+// SessionStart hook or the OMP extension does (src/core/sessions.ts format).
+export function writeSessionFile(root: string, harness: string, pid: number, sessionId: string): void {
+    const file = sessionFile(root, harness, pid)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, JSON.stringify({ sessionId, at: new Date().toISOString() }))
 }
 
 // Purpose: age in ms of the file at `file` (time since its mtime).

@@ -1,15 +1,17 @@
 // Shared test helpers: temp dirs, an in-process CallContext, a recording Exec stub, fake host pids, fake
 // CLIs and a Node parent process. Portable: no shell, no POSIX-only program, no procfs read (XPLAT-AUDIT B6).
 import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
 import type { CaptureResult, Exec, ExecRequest } from '../../src/core/exec.js'
-import type { RequestMeta } from '../../src/core/hostKey.js'
+import { usesSessionFile, type RequestMeta } from '../../src/core/hostKey.js'
 import { sleep } from '../../src/core/lock.js'
 import type { Harness } from '../../src/core/schemas.js'
 import type { CallContext } from '../../src/flows/context.js'
+import { writeSessionFile } from './state.js'
 
 export const REPO = path.resolve(import.meta.dirname, '..', '..')
 export const CLI = path.join(REPO, 'dist', 'cli.js')
@@ -49,8 +51,8 @@ export function recordingExec(
     }
 }
 
-// Host pids of in-process callers. Liveness comes from heartbeats, not from processes (SPEC §7), so a
-// host pid only has to be distinct: no process runs behind it.
+// Host pids of in-process callers. Identity comes from session ids and liveness from heartbeats (SPEC §3,
+// §7), so a host pid only has to be distinct: no process runs behind it.
 let nextFakePid = 4_100_000
 
 // Purpose: a fresh, distinct host pid for one simulated caller.
@@ -89,18 +91,30 @@ export async function until(cond: () => boolean | Promise<boolean>, ms = 8000): 
     }
 }
 
-// Purpose: an in-process CallContext for one simulated caller.
-export function callFor(
-    root: string,
-    harness: Harness,
-    opts: { ppid?: number; meta?: RequestMeta; exec?: Exec } = {},
-): CallContext {
+// What a simulated caller runs in: its harness session (claude/pi/omp; default: a fresh one), its host
+// pid (default: a fresh fake pid), `_meta` (codex/opencode) and the Exec stub.
+export interface CallerOptions {
+    session?: string
+    hostPid?: number
+    meta?: RequestMeta
+    exec?: Exec
+}
+
+// Purpose: an in-process CallContext for one simulated caller. For claude and omp it records the
+// session in the host's session file (as the SessionStart hook or the OMP extension does); for pi it is
+// the server env. Two calls with the same session and different host pids are one session resumed in a
+// new process.
+export function callFor(root: string, harness: Harness, opts: CallerOptions = {}): CallContext {
+    const hostPid = opts.hostPid ?? fakePid()
+    const session = opts.session ?? randomUUID()
+    if (usesSessionFile(harness)) writeSessionFile(root, harness, hostPid, session)
     return {
         root,
         harness,
         meta: opts.meta,
-        ppid: opts.ppid ?? fakePid(),
+        hostPid,
         pid: process.pid,
+        sessionEnv: harness === 'pi' ? session : undefined,
         exec: opts.exec ?? recordingExec(),
     }
 }

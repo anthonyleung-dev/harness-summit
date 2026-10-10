@@ -6,7 +6,8 @@ import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { LEASE_REFRESH_MS, refreshLease } from '../../src/core/lease.js'
+import { SECOND_LOOK_MS } from '../../src/core/heartbeat.js'
+import { LEASE_REFRESH_MS, LOCK_MAX_HOLD_MS, refreshLease, startLease } from '../../src/core/lease.js'
 import { breakStaleLock, LOCK_STALE_MS, sleep, withLock } from '../../src/core/lock.js'
 import { tmpDir, until } from '../helpers/env.js'
 import { ageFile, fileAge, writeLockFile } from '../helpers/state.js'
@@ -41,6 +42,40 @@ describe('lock lease', () => {
         })
         // The holder's release finds another state and removes nothing it does not own.
         expect(fs.existsSync(lock)).toBe(false)
+    })
+
+    it('a waiter takes a second look before a break: a refresh during it keeps the lock of its holder', async () => {
+        const lock = path.join(tmpDir('look'), 'x.lock')
+        // The holder's laptop slept: its lock looks a minute old when the waiter first reads it.
+        const content = writeLockFile(lock, 'sleeper', { ageMs: LOCK_STALE_MS * 6 })
+        let got = false
+        const waiter = withLock(lock, async () => {
+            got = true
+        })
+        // The holder wakes up and refreshes while the waiter takes its second look.
+        await sleep(500)
+        const now = new Date()
+        fs.utimesSync(lock, now, now)
+        await sleep(SECOND_LOOK_MS + 500)
+        expect(got).toBe(false)
+        expect(fs.readFileSync(lock, 'utf8')).toBe(content)
+        // The holder releases; the waiter takes the lock.
+        fs.rmSync(lock)
+        await waiter
+        expect(got).toBe(true)
+    })
+
+    it('a holder stops refreshing after LOCK_MAX_HOLD_MS, so a hung holder cannot block forever', async () => {
+        expect(LOCK_MAX_HOLD_MS).toBe(60_000)
+        const lock = path.join(tmpDir('maxhold'), 'x.lock')
+        writeLockFile(lock, 'hung', { ageMs: LOCK_STALE_MS * 2 })
+        const stop = startLease(lock, 'hung', 50, 300)
+        await until(() => fileAge(lock) < 1_000, 1_000)
+        await sleep(400)
+        ageFile(lock, LOCK_STALE_MS * 2)
+        await sleep(200)
+        stop()
+        expect(fileAge(lock)).toBeGreaterThan(LOCK_STALE_MS)
     })
 
     it('a refresh touches only a lock that still holds its token', async () => {

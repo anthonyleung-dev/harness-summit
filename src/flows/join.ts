@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 
 import { readAgent, updateAgent, writeAgent } from '../core/agents.js'
 import { summitError } from '../core/errors.js'
-import { codexThreadId, isPidKeyed, opencodeSessionId } from '../core/hostKey.js'
+import { codexThreadId, isSignalHarness, opencodeSessionId } from '../core/hostKey.js'
 import { loadHost, writeHost } from '../core/identity.js'
 import { log } from '../core/log.js'
 import { SUMMIT_GUIDANCE } from '../core/notice.js'
@@ -32,7 +32,7 @@ interface JoinCtx extends WithHost {
 
 // Purpose: the wake record for this host (SPEC §6 table).
 export function wakeRecordFor(call: CallContext, hostKey: string): Wake {
-    if (isPidKeyed(call.harness)) return { type: 'signal', path: signalPathFor(call.root, hostKey) }
+    if (isSignalHarness(call.harness)) return { type: 'signal', path: signalPathFor(call.root, hostKey) }
     if (call.harness === 'codex') return { type: 'codex-queue', threadId: need(codexThreadId(call.meta), 'threadId') }
     return { type: 'opencode-prompt', sessionID: need(opencodeSessionId(call.meta), 'sessionID') }
 }
@@ -95,7 +95,7 @@ const persist = step<JoinCtx>('persist', async (ctx) => {
     if (ctx.existing) agent = await refreshExisting(root, host.groupKey, agent)
     else await writeAgent(root, host.groupKey, agent)
     await writeHost(root, host)
-    await beatCaller(ctx.call, host)
+    await beatCaller(ctx.call, host.hostKey)
     return { ...ctx, agent }
 })
 

@@ -1,10 +1,13 @@
 // A raw JSON-RPC client for the real MCP server process (`node dist/cli.js mcp --harness <h>`). Raw on
 // purpose: tests control `_meta` exactly and can send `server/discover` before `initialize`.
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import readline from 'node:readline'
 
+import { PI_SESSION_ENV, usesSessionFile } from '../../src/core/hostKey.js'
 import type { Harness } from '../../src/core/schemas.js'
 import { cliCommand } from './env.js'
+import { writeSessionFile } from './state.js'
 
 type Pending = { resolve: (v: any) => void }
 
@@ -14,10 +17,15 @@ export interface StartOptions {
     // Start through a Node parent (cliCommand) so the server's ppid is that parent, not the test runner.
     viaParent?: boolean
     env?: NodeJS.ProcessEnv
+    // The harness session the host runs (claude/pi/omp; default: a fresh one). claude/omp: written to the
+    // session file of the server's parent; pi: passed in the server env, as the pi extension does.
+    session?: string
 }
 
 export class McpProc {
     readonly child: ChildProcessWithoutNullStreams
+    // The harness session this server serves (claude/pi/omp).
+    session = ''
     stderr = ''
     // stdout lines that are not JSON-RPC (must stay empty: stdout is the protocol)
     readonly nonJson: string[] = []
@@ -47,10 +55,17 @@ export class McpProc {
 
     // Purpose: start one server process.
     static start(opts: StartOptions): McpProc {
-        const env = { ...process.env, ...opts.env, HARNESS_SUMMIT_HOME: opts.root }
+        const session = opts.session ?? randomUUID()
+        const piEnv = opts.harness === 'pi' ? { [PI_SESSION_ENV]: session } : {}
+        const env = { ...process.env, ...opts.env, ...piEnv, HARNESS_SUMMIT_HOME: opts.root }
         const [cmd, argv] = cliCommand(['mcp', '--harness', opts.harness], opts.viaParent)
         const child = spawn(cmd, argv, { env })
-        return new McpProc(child)
+        // The server's parent: the Node parent with viaParent, else this test process.
+        const hostPid = opts.viaParent ? (child.pid as number) : process.pid
+        if (usesSessionFile(opts.harness)) writeSessionFile(opts.root, opts.harness, hostPid, session)
+        const proc = new McpProc(child)
+        proc.session = session
+        return proc
     }
 
     // Purpose: send a request and wait for its response message.

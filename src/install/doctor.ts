@@ -27,9 +27,11 @@ async function hasJsonKey(file: string, keyPath: string[]): Promise<boolean> {
     }
 }
 
-// Purpose: tell whether the MCP server registration of a harness is present.
+// Purpose: tell whether the MCP server registration of a harness is present. pi registers the server from
+// its extension (SPEC §3), so for pi that is the installed extension file.
 async function isRegistered(home: string, h: Exclude<Harness, 'claude'>): Promise<boolean> {
     const reg = registrationFor(home, h, await opencodeConfigPath(home))
+    if (h === 'pi') return await pathExists(path.join(path.dirname(reg.file), 'extensions', 'harness-summit.ts'))
     if (h === 'codex') return ((await readTextFile(reg.file).catch(() => null)) ?? '').includes(TOML_BEGIN)
     return await hasJsonKey(reg.file, reg.keyPath)
 }

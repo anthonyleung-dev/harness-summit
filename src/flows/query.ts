@@ -41,7 +41,7 @@ interface WhoamiCtx extends WithHost {
 const loadIdentity = step<WhoamiCtx>('loadIdentity', async (ctx) => {
     const host = await loadHost(ctx.call.root, need(ctx.hostKey, 'hostKey'))
     if (host === null) return ctx
-    await beatCaller(ctx.call, host)
+    await beatCaller(ctx.call, host.hostKey)
     return { ...ctx, host }
 })
 
@@ -82,7 +82,7 @@ const collect = step<MembersCtx>('listAgents', async (ctx) => {
             name: a.name,
             uuid: a.uuid,
             harness: a.harness,
-            alive: await isAlive(ctx.call.root, host.groupKey, a),
+            alive: await isAlive(ctx.call.root, a),
             self: a.uuid === host.uuid,
         })),
     )

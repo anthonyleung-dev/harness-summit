@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { summitError } from '../core/errors.js'
 import { BIN_ENV, findOnPath, type BinName } from '../core/exec.js'
 import { log } from '../core/log.js'
-import type { Launch } from './render.js'
+import { mcpLaunch, type Launch } from './render.js'
 
 // Purpose: repo root, found from this module (src/install or dist/install → two levels up).
 export function repoRoot(): string {
@@ -54,15 +54,21 @@ export function devPluginLaunch(): Launch {
 export const EXTENSION_SOURCE = path.join('adapters', 'pi-omp', 'harness-summit.ts')
 export const HARNESS_MARKER = 'const INJECTED_HARNESS: string | null = null'
 export const CLI_MARKER = 'const INJECTED_CLI: string[] | null = null'
+export const MCP_MARKER = 'const INJECTED_MCP: McpLaunch | null = null'
 
-// Purpose: the pi/OMP extension source with the harness and absolute CLI launch substituted.
+// Purpose: the pi/OMP extension source with the harness, the absolute CLI launch and (pi) the MCP server
+// launch substituted. pi registers the server from the extension (SPEC §3, §8).
 export function renderExtension(harness: 'pi' | 'omp', launch: Launch): string {
     const file = path.join(repoRoot(), EXTENSION_SOURCE)
     const src = fs.readFileSync(file, 'utf8')
-    if (!src.includes(HARNESS_MARKER) || !src.includes(CLI_MARKER)) {
+    if (!src.includes(HARNESS_MARKER) || !src.includes(CLI_MARKER) || !src.includes(MCP_MARKER)) {
         throw summitError('SUMMIT_INTERNAL', 'extension source lost its injection markers', 'renderExtension', { file })
     }
     return src
         .replace(HARNESS_MARKER, `const INJECTED_HARNESS: string | null = ${JSON.stringify(harness)}`)
         .replace(CLI_MARKER, `const INJECTED_CLI: string[] | null = ${JSON.stringify([launch.node, launch.cli])}`)
+        .replace(
+            MCP_MARKER,
+            `const INJECTED_MCP: McpLaunch | null = ${harness === 'pi' ? JSON.stringify(mcpLaunch(launch, 'pi')) : 'null'}`,
+        )
 }

@@ -1,8 +1,10 @@
 // summit_rename (SPEC §2, §5): set the display name in the group's name map.
 //
-// Name takeover (REVIEW M5, owner decision): a name held by an agent that is gone (`alive: false`: no
-// server beat it for HEARTBEAT_STALE_MS) is taken over. A holder with `alive: "unknown"` (OpenCode) is
-// taken over only with `force`. The holder keeps its folder; its map entry goes
+// Name takeover (REVIEW M5; owner decision 2026-10-10): a live holder (`alive: true`) always keeps its
+// name. Any other holder (`alive: false`: no server beat it for STALE_MS; `"unknown"`: OpenCode, or an
+// agent never beaten) loses it only with `force`, because its session may be resumed later and expect its
+// name back. A forced takeover of a holder that looks gone takes the second look first (a beat during it
+// means alive: refused). The holder keeps its folder; its map entry goes
 // and its agent.json name becomes null, so it can never write a second `<name>.md` next to the new
 // holder. The result says why a name was taken over (`takeover.reason`, O1).
 //
@@ -90,12 +92,13 @@ export async function assertNameFree(
 ): Promise<{ agent: AgentRecord; groupKey: string; reason: TakeoverReason } | null> {
     const holder = await nameHolder(root, groupKey, m, name, uuid)
     if (holder === null) return null
-    const alive = await isAlive(root, groupKey, holder.agent)
-    if (alive === true || (alive === 'unknown' && !force)) {
+    // Without force, any holder keeps the name: no second look is needed to refuse.
+    const alive = await isAlive(root, holder.agent, { confirm: force })
+    if (alive === true || !force) {
         const hint =
-            alive === 'unknown'
-                ? '; its liveness is unknown, pass force (`--force` with /sr or /sg) to take the name over'
-                : ''
+            alive === true
+                ? ''
+                : `; its holder is not alive now (alive: ${String(alive)}) but its session may resume; pass force (\`--force\` with /sr or /sg) to take the name over`
         throw summitError(
             'SUMMIT_NAME_TAKEN',
             `name ${name} belongs to another agent in ${groupKey}${hint}`,

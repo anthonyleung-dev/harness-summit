@@ -36,15 +36,8 @@ describe('install / uninstall (in-process, stubbed exec)', () => {
         )
         expect(toml.match(/approval_mode = "approve"/g)).toHaveLength(9)
 
-        const pi = JSON.parse(read('.pi/agent/mcp.json'))
-        expect(pi.mcpServers['harness-summit']).toEqual({
-            command: '/usr/bin/node',
-            args: ['/opt/harness-summit/dist/cli.js', 'mcp', '--harness', 'pi'],
-            exposure: 'direct',
-        })
-        expect(read('.pi/agent/mcp.json')).toContain(
-            '"hakiri-memory": {\n      "command": "hakiri",\n      "args": ["mcp"],\n      "env": { "HAKIRI_SCOPE": "user" }\n    }',
-        )
+        // pi: the extension registers the server with the session id (SPEC §3); mcp.json stays the user's.
+        expect(read('.pi/agent/mcp.json')).toBe(original.files['.pi/agent/mcp.json'])
         expect(read('.omp/agent/mcp.json')).toContain(
             '"hakiri-memory":{"command":"hakiri","args":["mcp"]},"qmd":{"command":"qmd","args":["mcp"]}',
         )
@@ -55,17 +48,13 @@ describe('install / uninstall (in-process, stubbed exec)', () => {
             'omp',
         ])
 
-        for (const rel of [
-            '.codex/config.toml',
-            '.pi/agent/mcp.json',
-            '.omp/agent/mcp.json',
-            '.config/opencode/opencode.jsonc',
-        ]) {
+        expect(fs.existsSync(path.join(home, '.pi/agent/mcp.json' + BACKUP_SUFFIX))).toBe(false)
+        for (const rel of ['.codex/config.toml', '.omp/agent/mcp.json', '.config/opencode/opencode.jsonc']) {
             expect(read(rel + BACKUP_SUFFIX)).toBe(original.files[rel])
         }
         expect(read('.config/opencode/opencode.jsonc')).toBe(original.files['.config/opencode/opencode.jsonc'])
         for (const [rel, content] of Object.entries(original.files)) {
-            if (!rel.endsWith('.toml') && !rel.endsWith('mcp.json')) expect(read(rel)).toBe(content)
+            if (!rel.endsWith('.toml') && rel !== '.omp/agent/mcp.json') expect(read(rel)).toBe(content)
         }
 
         const ext = read('.pi/agent/extensions/harness-summit.ts')
@@ -73,9 +62,12 @@ describe('install / uninstall (in-process, stubbed exec)', () => {
         expect(ext).toContain(
             'const INJECTED_CLI: string[] | null = ["/usr/bin/node","/opt/harness-summit/dist/cli.js"]',
         )
-        expect(read('.omp/agent/extensions/harness-summit.ts')).toContain(
-            'const INJECTED_HARNESS: string | null = "omp"',
+        expect(ext).toContain(
+            'const INJECTED_MCP: McpLaunch | null = {"command":"/usr/bin/node","args":["/opt/harness-summit/dist/cli.js","mcp","--harness","pi"]}',
         )
+        const ompExt = read('.omp/agent/extensions/harness-summit.ts')
+        expect(ompExt).toContain('const INJECTED_HARNESS: string | null = "omp"')
+        expect(ompExt).toContain('const INJECTED_MCP: McpLaunch | null = null')
 
         expect(fs.readdirSync(path.join(home, '.codex/skills')).sort()).toEqual([
             'sg',

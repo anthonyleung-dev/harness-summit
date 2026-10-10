@@ -5,11 +5,11 @@ import { describe, expect, it } from 'vitest'
 
 import {
     codexThreadId,
-    hostKeyForPid,
-    isPidKeyed,
-    pidOfHostKey,
-    PID_KEYED_HARNESSES,
+    hostKeyForSession,
+    isSignalHarness,
     resolveHostKey,
+    SESSION_FILE_HARNESSES,
+    SIGNAL_HARNESSES,
 } from '../../src/core/hostKey.js'
 import { breakStaleLock, LOCK_STALE_MS, sleep, withLock } from '../../src/core/lock.js'
 import { readMembers, updateMembers } from '../../src/core/members.js'
@@ -20,31 +20,38 @@ import { codexMeta, opencodeMeta, tmpDir } from '../helpers/env.js'
 import { ageFile, lockLine, writeLockFile } from '../helpers/state.js'
 
 describe('host keys', () => {
-    it('uses the parent pid for claude, pi and omp', () => {
-        expect(resolveHostKey({ harness: 'claude', meta: opencodeMeta('ignored'), ppid: 77 })).toBe('claude-77')
-        expect(resolveHostKey({ harness: 'pi', meta: undefined, ppid: 78 })).toBe('pi-78')
-        expect(hostKeyForPid('omp', 79)).toBe('omp-79')
-        expect(pidOfHostKey('omp-79')).toBe(79)
-        expect(pidOfHostKey('codex-123')).toBeNull()
+    it('uses the host-provided session id for claude, pi and omp, never _meta or a pid', () => {
+        expect(resolveHostKey({ harness: 'claude', meta: opencodeMeta('ignored'), sessionId: 'S1' })).toBe('claude-S1')
+        expect(resolveHostKey({ harness: 'pi', meta: undefined, sessionId: 'S2' })).toBe('pi-S2')
+        expect(hostKeyForSession('omp', 'S3')).toBe('omp-S3')
+        for (const harness of ['claude', 'pi', 'omp'] as const) {
+            expect(() => resolveHostKey({ harness, meta: undefined })).toThrow(
+                expect.objectContaining({ code: 'SUMMIT_NO_HOST_KEY' }),
+            )
+            expect(() => hostKeyForSession(harness, '../etc')).toThrow(
+                expect.objectContaining({ code: 'SUMMIT_NO_HOST_KEY' }),
+            )
+        }
     })
 
     it('uses _meta for codex and opencode and fails without it', () => {
-        expect(resolveHostKey({ harness: 'codex', meta: codexMeta('t1'), ppid: 1 })).toBe('codex-t1')
-        expect(resolveHostKey({ harness: 'opencode', meta: opencodeMeta('ses_a'), ppid: 1 })).toBe('opencode-ses_a')
+        expect(resolveHostKey({ harness: 'codex', meta: codexMeta('t1'), sessionId: 'x' })).toBe('codex-t1')
+        expect(resolveHostKey({ harness: 'opencode', meta: opencodeMeta('ses_a') })).toBe('opencode-ses_a')
         expect(() =>
-            resolveHostKey({ harness: 'codex', meta: { 'x-codex-turn-metadata': { thread_id: 't' } }, ppid: 1 }),
+            resolveHostKey({ harness: 'codex', meta: { 'x-codex-turn-metadata': { thread_id: 't' } } }),
         ).toThrow(expect.objectContaining({ code: 'SUMMIT_NO_HOST_KEY' }))
-        expect(() => resolveHostKey({ harness: 'opencode', meta: { sessionID: 'x' }, ppid: 1 })).toThrow(
+        expect(() => resolveHostKey({ harness: 'opencode', meta: { sessionID: 'x' } })).toThrow(
             expect.objectContaining({ code: 'SUMMIT_NO_HOST_KEY' }),
         )
-        expect(() => resolveHostKey({ harness: 'opencode', meta: opencodeMeta('../etc'), ppid: 1 })).toThrow(
+        expect(() => resolveHostKey({ harness: 'opencode', meta: opencodeMeta('../etc') })).toThrow(
             expect.objectContaining({ code: 'SUMMIT_NO_HOST_KEY' }),
         )
     })
 
-    it('derives the pid-keyed set and the pid pattern from one list (N2)', () => {
-        expect([...PID_KEYED_HARNESSES].sort()).toEqual(['claude', 'omp', 'pi'])
-        for (const h of HARNESSES) expect(pidOfHostKey(`${h}-42`) !== null).toBe(isPidKeyed(h))
+    it('derives the signal and session-file sets from one list each (N2)', () => {
+        expect([...SIGNAL_HARNESSES].sort()).toEqual(['claude', 'omp', 'pi'])
+        expect([...SESSION_FILE_HARNESSES].sort()).toEqual(['claude', 'omp'])
+        for (const h of HARNESSES) expect(isSignalHarness(h)).toBe(SIGNAL_HARNESSES.includes(h))
     })
 
     it('prefers threadId when the turn metadata disagrees', () => {

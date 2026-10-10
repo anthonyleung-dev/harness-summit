@@ -7,7 +7,7 @@ import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { HEARTBEAT_STALE_MS } from '../../src/core/heartbeat.js'
+import { STALE_MS } from '../../src/core/heartbeat.js'
 import { readHost } from '../../src/core/identity.js'
 import { LOCK_STALE_MS, sleep, withLock } from '../../src/core/lock.js'
 import { agentDir, cursorLock, hostsDir, membersLock } from '../../src/core/paths.js'
@@ -20,7 +20,7 @@ import { send } from '../../src/flows/send.js'
 import { callFor, errno, errorCode, tmpRoot, until } from '../helpers/env.js'
 import {
     ageFile,
-    ageHeartbeat,
+    ageBeat,
     agentJson,
     foldersOf,
     mapOf,
@@ -149,9 +149,9 @@ describe('group move under the group lock', () => {
         const b = callFor(root, 'claude')
         const jb = await join(b)
         await rename(b, 'bob')
-        ageHeartbeat(agentDir(root, 'g9', jh.uuid), HEARTBEAT_STALE_MS + 5_000)
+        ageBeat(root, jh.hostKey, STALE_MS + 5_000)
         fs.mkdirSync(path.join(agentDir(root, 'g9', jb.uuid), 'x'), { recursive: true }) // moveFolder refuses
-        expect(await errorCode(group(b, 'g9'))).toBe('SUMMIT_IO')
+        expect(await errorCode(group(b, 'g9', true))).toBe('SUMMIT_IO')
         expect(mapOf(root, 'g9')).toEqual({ bob: jh.uuid })
         expect(agentJson(agentDir(root, 'g9', jh.uuid)).name).toBe('bob')
         expect(mapOf(root, jb.groupKey)).toEqual({ bob: jb.uuid })

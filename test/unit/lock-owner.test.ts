@@ -6,9 +6,15 @@ import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { SECOND_LOOK_MS } from '../../src/core/heartbeat.js'
 import { breakStaleLock, LOCK_STALE_MS, parseLockOwner, sleep, withLock } from '../../src/core/lock.js'
-import { errno, tmpDir } from '../helpers/env.js'
+import { errno, tmpDir, until } from '../helpers/env.js'
 import { ageFile, writeLockFile } from '../helpers/state.js'
+
+// Purpose: tell whether `lock` exists and holds something other than `stale` (a new holder took it).
+function heldByOther(lock: string, stale: string): boolean {
+    return fs.existsSync(lock) && fs.readFileSync(lock, 'utf8') !== stale
+}
 
 // Purpose: run `fn` as one holder of `lock` and record the most holders seen at once in `count`.
 function holder(lock: string, count: { now: number; most: number }, ms: number) {
@@ -50,7 +56,8 @@ describe('lock owner', () => {
         writeLockFile(lock, 'crashed', { ageMs: LOCK_STALE_MS + 1_000 })
         const started = Date.now()
         await withLock(lock, async () => {})
-        expect(Date.now() - started).toBeLessThan(2_000)
+        // Only the second look (SECOND_LOOK_MS) and the backoff, never the 15 s lock timeout.
+        expect(Date.now() - started).toBeLessThan(SECOND_LOOK_MS + 2_000)
         expect(fs.readdirSync(path.dirname(lock))).toEqual([])
     })
 
@@ -95,7 +102,8 @@ describe('lock owner', () => {
         const stale = writeLockFile(lock, 'S', { ageMs: LOCK_STALE_MS * 6 })
         const count = { now: 0, most: 0 }
         const w2 = holder(lock, count, 300)
-        await sleep(50)
+        // w2 broke the stale lock (after its second look) and holds a fresh one.
+        await until(() => heldByOther(lock, stale))
         // A third waiter arrives exactly in the gap a break would open between its rename and link back.
         const realLink = fsp.link
         let w3: Promise<void> | undefined
@@ -115,7 +123,7 @@ describe('lock owner', () => {
         const stale = writeLockFile(lock, 'S', { ageMs: LOCK_STALE_MS * 6 })
         let release = () => {}
         const w2 = withLock(lock, () => new Promise<void>((r) => (release = r)))
-        await sleep(50)
+        await until(() => heldByOther(lock, stale))
         const realLink = fsp.link
         vi.spyOn(fsp, 'link').mockImplementation(async (a, b) => {
             release()

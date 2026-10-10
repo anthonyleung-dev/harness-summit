@@ -12,8 +12,8 @@ export interface CommandTemplate {
 const SERVER = 'the harness-summit MCP server'
 const tool = (name: string) => `the \`${name}\` tool of ${SERVER}`
 
-// Purpose: the rule for a trailing `--force` in the user text (takes a name over from a holder whose
-// liveness is unknown); `what` names the argument the flag is removed from.
+// Purpose: the rule for a trailing `--force` in the user text (takes a name over from a holder that is
+// not alive now); `what` names the argument the flag is removed from.
 const forceRule = (what: string) =>
     `If that text ends with \`--force\`, remove \`--force\` from the ${what} and also pass \`force\` set to true.`
 

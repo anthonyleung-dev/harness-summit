@@ -1,5 +1,6 @@
-// Host-key resolution (SPEC §3). The only module that knows how each harness names its caller.
-// claude/pi/omp: `<harness>-<host pid>`; codex: `codex-<threadId>`; opencode: `opencode-<sessionID>`.
+// Host-key resolution (SPEC §3). The only module that knows how each harness names its caller. Every key
+// follows the harness SESSION, not a process, so a resumed session gets its agent back:
+// claude/pi/omp: `<harness>-<sessionId>`; codex: `codex-<threadId>`; opencode: `opencode-<sessionID>`.
 import { summitError } from './errors.js'
 import { log } from './log.js'
 import type { Harness } from './schemas.js'
@@ -9,33 +10,46 @@ export type RequestMeta = Record<string, unknown> | undefined
 export const CODEX_THREAD_KEY = 'threadId'
 export const CODEX_TURN_META_KEY = 'x-codex-turn-metadata'
 export const OPENCODE_SESSION_KEY = 'ai.opencode/sessionID'
+// The env name through which the pi extension hands the session id to the server it registers.
+export const PI_SESSION_ENV = 'SUMMIT_SESSION_ID'
 
-const ID_PATTERN = /^[A-Za-z0-9_.-]{1,128}$/
+export const ID_PATTERN = /^[A-Za-z0-9_.-]{1,128}$/
 
-// The one list of harnesses that identify their caller by host pid (one host process = one agent).
-// `isPidKeyed` and `pidOfHostKey` both derive from it (DELTA-REVIEW-1 N2).
-export const PID_KEYED_HARNESSES: readonly Harness[] = ['claude', 'pi', 'omp']
-const PID_HOST_KEY = new RegExp(`^(${PID_KEYED_HARNESSES.join('|')})-(\\d+)$`)
+// The harnesses woken by a signal file and keyed by a session id that the host side provides (not by
+// `_meta`). `isSignalHarness` derives from it (DELTA-REVIEW-1 N2).
+export const SIGNAL_HARNESSES: readonly Harness[] = ['claude', 'pi', 'omp']
+// Of those, the ones whose server reads the session id from `<root>/.sessions/<harness>-<hostPid>.json`
+// (their server lives across `/clear` or `/new`). pi gets it in the server's env instead (PI_SESSION_ENV).
+export const SESSION_FILE_HARNESSES: readonly Harness[] = ['claude', 'omp']
 
-// Purpose: tell whether the harness identifies its caller by host pid.
-export function isPidKeyed(harness: Harness): boolean {
-    return PID_KEYED_HARNESSES.includes(harness)
+// Why a signal harness call has no session id, in words a user can act on.
+const NO_SESSION: Record<string, string> = {
+    claude: 'no Claude Code session recorded for this server: the harness-summit plugin hooks did not run (SessionStart writes .sessions/claude-<pid>.json); restart Claude Code with the harness-summit plugin enabled',
+    pi: `${PI_SESSION_ENV} is not set: the harness-summit pi extension registers this server; remove any harness-summit entry from ~/.pi/agent/mcp.json and restart pi`,
+    omp: 'no OMP session recorded for this server: the harness-summit OMP extension did not run (it writes .sessions/omp-<pid>.json in an interactive session)',
 }
 
-// Purpose: host key of a pid-keyed harness. Used by the MCP server (pid = process.ppid), the Claude
-// hooks (pid = $CLAUDE_PID) and the pi/OMP extension (pid = its process.pid).
-export function hostKeyForPid(harness: Harness, pid: number): string {
-    if (!isPidKeyed(harness) || !Number.isInteger(pid) || pid <= 0) {
-        throw summitError('SUMMIT_NO_HOST_KEY', `no pid host key for ${harness}`, 'hostKeyForPid', { harness, pid })
+// Purpose: tell whether the harness is woken by a signal file and keyed by a host-provided session id.
+export function isSignalHarness(harness: Harness): boolean {
+    return SIGNAL_HARNESSES.includes(harness)
+}
+
+// Purpose: tell whether the harness's server reads its session id from a session file.
+export function usesSessionFile(harness: Harness): boolean {
+    return SESSION_FILE_HARNESSES.includes(harness)
+}
+
+// Purpose: host key of a signal harness session. Used by the MCP server, the Claude hooks and the pi/OMP
+// extension's arm call.
+export function hostKeyForSession(harness: Harness, sessionId: string | undefined): string {
+    if (!isSignalHarness(harness) || sessionId === undefined || sessionId === '') {
+        const why = NO_SESSION[harness] ?? `no session host key for ${harness}`
+        throw summitError('SUMMIT_NO_HOST_KEY', why, 'hostKeyForSession', { harness })
     }
-    return `${harness}-${pid}`
-}
-
-// Purpose: the host pid inside a pid-keyed host key (`claude-123` → 123), or null for codex/opencode
-// keys and anything else.
-export function pidOfHostKey(hostKey: string): number | null {
-    const m = PID_HOST_KEY.exec(hostKey)
-    return m ? Number(m[2]) : null
+    if (!ID_PATTERN.test(sessionId)) {
+        throw summitError('SUMMIT_NO_HOST_KEY', 'unusable session id', 'hostKeyForSession', { harness, sessionId })
+    }
+    return `${harness}-${sessionId}`
 }
 
 // Purpose: read a string field from `_meta`, or undefined.
@@ -61,10 +75,11 @@ export function opencodeSessionId(meta: RequestMeta): string | undefined {
     return metaString(meta, OPENCODE_SESSION_KEY)
 }
 
-// Purpose: resolve the host key of one tool call. Never reads env (SPEC §3).
-export function resolveHostKey(input: { harness: Harness; meta: RequestMeta; ppid: number }): string {
-    const { harness, meta, ppid } = input
-    if (isPidKeyed(harness)) return hostKeyForPid(harness, ppid)
+// Purpose: resolve the host key of one tool call. `sessionId` is what the host side provided for a signal
+// harness (session file or the pi env, read by the caller); codex and opencode come from `_meta`.
+export function resolveHostKey(input: { harness: Harness; meta: RequestMeta; sessionId?: string }): string {
+    const { harness, meta } = input
+    if (isSignalHarness(harness)) return hostKeyForSession(harness, input.sessionId)
     const id = harness === 'codex' ? codexThreadId(meta) : opencodeSessionId(meta)
     const expected = harness === 'codex' ? `_meta.${CODEX_THREAD_KEY}` : `_meta["${OPENCODE_SESSION_KEY}"]`
     if (id === undefined) {

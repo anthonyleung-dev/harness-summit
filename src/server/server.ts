@@ -8,13 +8,12 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 
 import { summitError, toSummitError } from '../core/errors.js'
 import { defaultExec, type Exec } from '../core/exec.js'
-import { serveHostKey, startHeartbeat } from '../core/heartbeat.js'
-import { hostKeyForPid, isPidKeyed, type RequestMeta } from '../core/hostKey.js'
-import { dropStaleHost } from '../core/identity.js'
+import { cleanupBeats, startHeartbeat } from '../core/heartbeat.js'
+import { isSignalHarness, PI_SESSION_ENV, type RequestMeta } from '../core/hostKey.js'
 import { configureLog, log } from '../core/log.js'
 import { summitRoot } from '../core/paths.js'
 import { SUMMIT_NAME, type Harness } from '../core/schemas.js'
-import type { CallContext } from '../flows/context.js'
+import { callHostKey, type CallContext } from '../flows/context.js'
 import { TOOLS, type ToolDef } from './tools.js'
 
 export const SERVER_VERSION = '1.0.0'
@@ -28,6 +27,10 @@ export interface ServerOptions {
     harness: Harness
     root?: string
     exec?: Exec
+    // The parent pid, read once at server start (default: process.ppid now).
+    hostPid?: number
+    // pi: the session id from PI_SESSION_ENV, read once at server start.
+    sessionEnv?: string
 }
 
 // Purpose: run one tool definition for one request and shape the MCP result. Errors become
@@ -59,6 +62,7 @@ export async function runTool<I extends z.ZodObject, O extends z.ZodObject>(
 export function createSummitServer(options: ServerOptions): McpServer {
     const root = options.root ?? summitRoot()
     const exec = options.exec ?? defaultExec
+    const hostPid = options.hostPid ?? process.ppid
     const server = new McpServer({ name: SUMMIT_NAME, version: SERVER_VERSION })
     for (const def of TOOLS as ToolDef<z.ZodObject, z.ZodObject>[]) {
         server.registerTool(
@@ -69,8 +73,9 @@ export function createSummitServer(options: ServerOptions): McpServer {
                     root,
                     harness: options.harness,
                     meta: extra._meta as RequestMeta,
-                    ppid: process.ppid,
+                    hostPid,
                     pid: process.pid,
+                    sessionEnv: options.sessionEnv,
                     exec,
                 }
                 const running = runTool(def, call, args)
@@ -133,38 +138,43 @@ function installExitHandlers(harness: Harness, stopHeartbeat: () => void): void 
     process.stdin.once('end', () => exit('stdin end'))
 }
 
-// Purpose: start this server's heartbeat (SPEC §3, §7). A pid-keyed server (claude, pi, omp) first drops
-// the record of its host key when no server beat its agent for HEARTBEAT_STALE_MS (a dead session whose
-// pid this host now has), then serves that key; a Codex server registers threads as calls arrive.
-// Runs before the transport connects, so no tool call sees a record the check would drop.
-export async function startServing(root: string, harness: Harness): Promise<() => void> {
-    if (isPidKeyed(harness)) {
-        try {
-            const hostKey = hostKeyForPid(harness, process.ppid)
-            await dropStaleHost(root, hostKey).catch((err) =>
-                log('warn', 'startServing', 'stale host check failed; record kept', { hostKey, error: String(err) }),
-            )
-            serveHostKey(hostKey)
-        } catch (err) {
-            // No usable host pid (ppid 0): every tool call fails with SUMMIT_NO_HOST_KEY anyway.
-            log('error', 'startServing', 'no host key for this server', { ppid: process.ppid, error: String(err) })
-        }
-    }
-    return startHeartbeat(root)
+// Purpose: start this server's heartbeat (SPEC §7): drop heartbeat files of long-ended sessions, then
+// beat the host's current session key on every tick (claude and omp read their session file each time,
+// so `/clear` and `/new` move the beat to the new session; pi's key is fixed by its env). Codex keys are
+// added by the calls themselves (beatCaller); opencode beats nothing.
+export async function startServing(root: string, base: CallContext): Promise<() => void> {
+    await cleanupBeats(root).catch((err: unknown) =>
+        log('warn', 'startServing', 'heartbeat cleanup failed', { error: String(err) }),
+    )
+    // Purpose: the host key of the host's current session, or none (not recorded yet, or no such key).
+    const current = async (): Promise<string[]> =>
+        isSignalHarness(base.harness)
+            ? await callHostKey(base).then(
+                  (k) => [k],
+                  () => [],
+              )
+            : []
+    return startHeartbeat(root, base.harness, current)
 }
 
-// Purpose: entry point of `harness-summit mcp --harness <h>`.
+// Purpose: entry point of `harness-summit mcp --harness <h>`. The parent pid and the pi session env are
+// read once, here: after the host dies, Linux reparents the server and process.ppid names init.
 export async function runMcpServer(harness: Harness): Promise<void> {
     configureLog({ stderr: true, component: `mcp-${harness}` })
     const root = summitRoot()
-    installExitHandlers(harness, await startServing(root, harness))
-    const server = createSummitServer({ harness, root })
-    await server.connect(new StdioServerTransport())
-    log('info', 'mcp', 'server started', {
-        harness,
-        pid: process.pid,
-        ppid: process.ppid,
-        cwd: process.cwd(),
+    const hostPid = process.ppid
+    const sessionEnv = harness === 'pi' ? process.env[PI_SESSION_ENV] : undefined
+    const base: CallContext = {
         root,
-    })
+        harness,
+        meta: undefined,
+        hostPid,
+        pid: process.pid,
+        sessionEnv,
+        exec: defaultExec,
+    }
+    installExitHandlers(harness, await startServing(root, base))
+    const server = createSummitServer({ harness, root, hostPid, sessionEnv })
+    await server.connect(new StdioServerTransport())
+    log('info', 'mcp', 'server started', { harness, pid: process.pid, hostPid, sessionEnv, cwd: process.cwd(), root })
 }

@@ -3,10 +3,10 @@ import fs from 'node:fs/promises'
 
 import { hasErrno, summitError } from './errors.js'
 import { pathExists, readJsonFile, writeJsonAtomic } from './fsx.js'
-import { isBeatFresh } from './heartbeat.js'
+import { beatTime, confirmGone, isFresh } from './heartbeat.js'
 import { log } from './log.js'
 import { lockGroup } from './members.js'
-import { agentDir, agentFile, groupDir } from './paths.js'
+import { agentDir, agentFile, aliveFile, groupDir } from './paths.js'
 import { AgentRecordSchema, UUID_PATTERN, type AgentRecord } from './schemas.js'
 
 export type Alive = boolean | 'unknown'
@@ -98,17 +98,22 @@ export async function listAgents(root: string, groupKey: string): Promise<AgentR
     return agents
 }
 
-// Purpose: liveness of an agent (SPEC §7): "unknown" for OpenCode (one shared server outlives every
-// session, so nothing beats for one session); else true while the heartbeat in its folder is younger
-// than HEARTBEAT_STALE_MS, false when it is older or missing (src/core/heartbeat.ts). Only a definite
-// false lets another agent take a name over without `force`.
+// Purpose: liveness of an agent (SPEC §7), from the heartbeat of its host key: "unknown" for OpenCode
+// (one shared server outlives every session) and for an agent that was never beaten (it joined before
+// heartbeats existed); true while the heartbeat is fresh; false when it is older than STALE_MS. With
+// `confirm` (a decision that declares the agent gone), a stale heartbeat gets the second look first, and
+// any beat during it means alive.
 export async function isAlive(
     root: string,
-    groupKey: string,
-    agent: Pick<AgentRecord, 'harness' | 'uuid'>,
+    agent: Pick<AgentRecord, 'harness' | 'hostKey'>,
+    opts: { confirm?: boolean } = {},
 ): Promise<Alive> {
     if (agent.harness === 'opencode') return 'unknown'
-    return await isBeatFresh(agentDir(root, groupKey, agent.uuid))
+    const seen = await beatTime(root, agent.hostKey)
+    if (seen === null) return 'unknown'
+    if (isFresh(seen)) return true
+    if (opts.confirm === true && !(await confirmGone(aliveFile(root, agent.hostKey), seen))) return true
+    return false
 }
 
 // A change to one agent.json: the fields to set, or a function of the current record that returns

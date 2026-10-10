@@ -1,13 +1,8 @@
 // Identity records `<root>/.hosts/<hostKey>.json` (SPEC §3). Read from disk on every call; never cached.
 //
-// Two repairs:
-// - Stale record (REVIEW m8): a pid-keyed record (claude, pi, omp) whose host process is gone must not
-//   pass to a new process that got the same pid. A new MCP server checks the record of its own host key
-//   once, when it starts and before it answers anything (dropStaleHost): when no server has beaten the
-//   agent for HEARTBEAT_STALE_MS, the record belongs to a dead session and is deleted. From then on the
-//   server's own beats keep the record fresh, so the check is not repeated on read (an age check on read
-//   would also drop a live record after a suspend, before the first beat). Known limit: a pid reused
-//   within HEARTBEAT_STALE_MS of the old server's last beat inherits the record.
+// Host keys follow the harness session (src/core/hostKey.ts), never a process, so a record never goes
+// stale by itself: a session resumed at any time later finds its agent again. Only summit_bye deletes a
+// record. One repair happens on every read:
 // - Moved folder (REVIEW M1): when the record's group has no folder for the uuid, but another group
 //   has it (a group move that stopped after the folder moved), the record is pointed at that group.
 import fs from 'node:fs/promises'
@@ -15,40 +10,14 @@ import fs from 'node:fs/promises'
 import { agentExists, findAgentGroup } from './agents.js'
 import { summitError } from './errors.js'
 import { readJsonFile, writeJsonAtomic } from './fsx.js'
-import { heartbeatAge, HEARTBEAT_STALE_MS } from './heartbeat.js'
-import { pidOfHostKey } from './hostKey.js'
 import { log } from './log.js'
 import { updateMembers, withoutUuid } from './members.js'
-import { agentDir, hostFile } from './paths.js'
+import { hostFile } from './paths.js'
 import { HostRecordSchema, type HostRecord } from './schemas.js'
 
 // Purpose: read the identity of a host key, or null when it has not joined.
 export async function readHost(root: string, hostKey: string): Promise<HostRecord | null> {
     return await readJsonFile(hostFile(root, hostKey), HostRecordSchema)
-}
-
-// Purpose: at server start, delete the record of a pid-keyed host key when its agent has no heartbeat
-// younger than HEARTBEAT_STALE_MS (missing counts as old): the server that served it is gone, and this
-// process only has the same pid. Codex and OpenCode keys are never touched (they hold no pid). A record
-// whose folder is in no group is left to loadHost (it reads as not joined). True when deleted.
-export async function dropStaleHost(root: string, hostKey: string, now = Date.now()): Promise<boolean> {
-    if (pidOfHostKey(hostKey) === null) return false
-    const host = await readHost(root, hostKey)
-    if (host === null) return false
-    const groupKey = await findAgentGroup(root, host.uuid, host.groupKey)
-    if (groupKey === null) return false
-    const age = await heartbeatAge(agentDir(root, groupKey, host.uuid), now)
-    if (age !== null && age <= HEARTBEAT_STALE_MS) {
-        log('info', 'dropStaleHost', 'host record is fresh; kept', { hostKey, uuid: host.uuid, age })
-        return false
-    }
-    log('warn', 'dropStaleHost', 'stale host record (no heartbeat); treating as not joined', {
-        hostKey,
-        uuid: host.uuid,
-        age,
-    })
-    await deleteHost(root, hostKey)
-    return true
 }
 
 // Purpose: point the record at the group that really holds the agent folder. Returns the record
@@ -99,7 +68,7 @@ export async function writeHost(root: string, host: HostRecord): Promise<void> {
     log('info', 'writeHost', 'identity written', { hostKey: host.hostKey, uuid: host.uuid, groupKey: host.groupKey })
 }
 
-// Purpose: delete the identity of a host key (summit_bye, stale record).
+// Purpose: delete the identity of a host key (summit_bye).
 export async function deleteHost(root: string, hostKey: string): Promise<void> {
     await fs.rm(hostFile(root, hostKey), { force: true })
     log('info', 'deleteHost', 'identity removed', { hostKey })

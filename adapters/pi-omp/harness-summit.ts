@@ -1,7 +1,13 @@
 // harness-summit extension for pi and OMP (SPEC §6). One file for both harnesses.
 //
-// It arms the signal file `<root>/.wake/<harness>-<process.pid>.signal`, watches it, and when a sender
-// rings it, asks the CLI for the notice and wakes the session:
+// Identity follows the harness session (SPEC §3). On every session start (and OMP session switch) it:
+//   pi : registers the harness-summit MCP server itself (`registerMcpServer`, exposure "direct") with the
+//        session id in its env (SUMMIT_SESSION_ID); pi restarts that server for every session, so the env
+//        is always current. Install writes no pi mcp.json entry: one of the same name would win.
+//   OMP: records the session id for its MCP server, which OMP keeps across `/new` (`hook ext-arm` writes
+//        `<root>/.sessions/omp-<process.pid>.json`). Only in an interactive session (ctx.hasUI).
+// Then (only with a UI) it arms the signal file `<root>/.wake/<harness>-<sessionId>.signal`, watches it,
+// and when a sender rings it, asks the CLI for the notice and wakes the session:
 //   pi  idle: custom message, then a steer user message (parent-wake shape, 10 s dedupe)
 //   pi  busy: custom message with triggerTurn + deliverAs followUp
 //   OMP     : custom message with triggerTurn + deliverAs followUp
@@ -9,7 +15,7 @@
 // It imports nothing from the harness-summit sources on purpose: the installed copy lives alone in
 // ~/.pi/agent/extensions or ~/.omp/agent/extensions. Host key, signal path and notice text all come
 // from the CLI (`hook ext-arm`, `notice`), so this file holds none of that logic. `install` replaces
-// the two INJECTED_ constants; a copy loaded from the repo finds the CLI next to itself.
+// the INJECTED_ constants; a copy loaded from the repo finds the CLI next to itself.
 //
 // Spawning (XPLAT-AUDIT B4): this file starts exactly one program, the node binary that ran install
 // (`process.execPath`, a real `.exe` on Windows), with the CLI as its first argument. It never starts a
@@ -23,6 +29,7 @@ import { fileURLToPath } from 'node:url'
 
 const INJECTED_HARNESS: string | null = null
 const INJECTED_CLI: string[] | null = null
+const INJECTED_MCP: McpLaunch | null = null
 
 const WAKE_TEXT = 'harness-summit mail above. Call summit_read.'
 const WAKE_DEDUPE_MS = 10_000
@@ -30,6 +37,16 @@ const SIGNAL_SETTLE_MS = 250
 const CLI_TIMEOUT_MS = 10_000
 
 type HostHarness = 'pi' | 'omp'
+
+// How pi starts the MCP server: the launch install renders for pi (absolute node, CLI, harness CLI env).
+interface McpLaunch {
+    command: string
+    args: string[]
+    env?: Record<string, string>
+}
+
+const SERVER_NAME = 'harness-summit'
+const SESSION_ENV = 'SUMMIT_SESSION_ID'
 
 interface ExtError {
     code: string
@@ -59,6 +76,19 @@ export function cliLaunch(): string[] {
     if (INJECTED_CLI !== null) return INJECTED_CLI
     const here = path.dirname(fileURLToPath(import.meta.url))
     return ['node', path.resolve(here, '..', '..', 'dist', 'cli.js')]
+}
+
+// Purpose: how pi starts the MCP server: injected by install, else `node <repo>/dist/cli.js mcp --harness pi`.
+export function mcpLaunch(): McpLaunch {
+    if (INJECTED_MCP !== null) return INJECTED_MCP
+    const [command, ...pre] = cliLaunch()
+    return { command: command as string, args: [...pre, 'mcp', '--harness', 'pi'] }
+}
+
+// Purpose: the session id of the current session from the extension context, or undefined.
+export function sessionIdOf(c: any): string | undefined {
+    const id = c?.sessionManager?.getSessionId?.()
+    return typeof id === 'string' && id !== '' ? id : undefined
 }
 
 // Purpose: validate the `hook ext-arm` output (the CLI boundary DTO). This file cannot import Zod:
@@ -154,12 +184,32 @@ export default function harnessSummit(api: any): void {
         }, SIGNAL_SETTLE_MS)
     }
 
-    // Purpose: (re-)arm the signal file and its watcher for this process.
+    // Purpose: pi only: register the MCP server for this session, synchronously inside session_start so
+    // pi connects the child with the current session id (probes/pi.md P1, P2).
+    const registerServer = (sessionId: string) => {
+        if (harness !== 'pi' || typeof api.registerMcpServer !== 'function') return
+        const launch = mcpLaunch()
+        api.registerMcpServer(SERVER_NAME, {
+            command: launch.command,
+            args: launch.args,
+            env: { ...(launch.env ?? {}), [SESSION_ENV]: sessionId },
+            exposure: 'direct',
+        })
+    }
+
+    // Purpose: on a session start or switch: register the server (pi), then, with a UI, record the session
+    // (omp) and (re-)arm the session's signal file and its watcher.
     const arm = async (event: string, c: any) => {
+        const sessionId = sessionIdOf(c)
+        if (sessionId === undefined) return
+        registerServer(sessionId)
         if (c?.hasUI !== true) return
         ctx = c
+        const pidArgs = harness === 'omp' ? ['--pid', String(process.pid)] : []
         try {
-            armed = parseArmed(await runCli(['hook', 'ext-arm', '--harness', harness, '--pid', String(process.pid)]))
+            armed = parseArmed(
+                await runCli(['hook', 'ext-arm', '--harness', harness, '--session', sessionId, ...pidArgs]),
+            )
             watcher?.close()
             watcher = fs.watch(armed.signalPath, onSignal)
             log('info', 'arm', 'watching', { event, signalPath: armed.signalPath })

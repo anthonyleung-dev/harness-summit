@@ -1,15 +1,18 @@
-// Receiver-side hooks: Claude Code SessionStart / FileChanged (SPEC §6) and the arm call of the
+// Receiver-side hooks: Claude Code SessionStart / FileChanged (SPEC §3, §6) and the arm call of the
 // pi/OMP extension. Each returns what the CLI must print and the exit code; nothing here writes to
-// stdout or stderr directly.
+// stdout or stderr directly. Identity and the wake signal follow the harness session: SessionStart
+// records the session id the claude process runs now (startup, resume, clear, compact) in its session
+// file, and arms `<root>/.wake/claude-<sessionId>.signal`.
 import path from 'node:path'
 import { z } from 'zod'
 
-import { toSummitError } from '../core/errors.js'
-import { hostKeyForPid } from '../core/hostKey.js'
+import { summitError, toSummitError } from '../core/errors.js'
+import { hostKeyForSession } from '../core/hostKey.js'
 import { log, logFilePath } from '../core/log.js'
 import { noticeForHostKey } from '../core/notice.js'
 import { signalPathFor } from '../core/paths.js'
 import type { Harness } from '../core/schemas.js'
+import { readSession, writeSession } from '../core/sessions.js'
 import { ensureSignal } from '../core/signal.js'
 
 export interface HookResult {
@@ -45,25 +48,25 @@ export function claudePid(env: NodeJS.ProcessEnv, ppid: number): number {
     return ppid
 }
 
-// Purpose: arm the signal file of a pid-keyed host and return its host key and path.
-export async function armSignal(
-    root: string,
-    harness: Harness,
-    pid: number,
-): Promise<{ hostKey: string; signalPath: string }> {
-    const hostKey = hostKeyForPid(harness, pid)
+// Purpose: arm the signal file of a session's host key (touch: never truncate) and return its path.
+export async function armSignal(root: string, hostKey: string): Promise<{ hostKey: string; signalPath: string }> {
     const signalPath = signalPathFor(root, hostKey)
     await ensureSignal(signalPath)
     log('debug', 'armSignal', 'armed', { hostKey, signalPath })
     return { hostKey, signalPath }
 }
 
-// Purpose: SessionStart: arm `<root>/.wake/claude-<pid>.signal`, print watchPaths, and add the
-// notice as additionalContext when mail is already unread (the watcher ignores initial content).
+// Purpose: SessionStart: record the session this claude process runs now (`.sessions/claude-<pid>.json`,
+// read by its MCP server on every call), arm `<root>/.wake/claude-<sessionId>.signal`, print watchPaths,
+// and add the notice as additionalContext when mail is already unread (the watcher ignores initial
+// content). Without a session id in stdin nothing is armed (logged).
 export async function claudeSessionStart(stdin: string, he: HookEnv): Promise<HookResult> {
     const input = parseStdin(stdin, SessionStartInput, 'claudeSessionStart')
     try {
-        const { hostKey, signalPath } = await armSignal(he.root, 'claude', claudePid(he.env, he.ppid))
+        const pid = claudePid(he.env, he.ppid)
+        const hostKey = hostKeyForSession('claude', input.session_id)
+        await writeSession(he.root, 'claude', pid, input.session_id as string)
+        const { signalPath } = await armSignal(he.root, hostKey)
         const notice = await noticeForHostKey(he.root, hostKey)
         const out = {
             hookSpecificOutput: {
@@ -72,7 +75,7 @@ export async function claudeSessionStart(stdin: string, he: HookEnv): Promise<Ho
                 ...(notice !== null ? { additionalContext: notice } : {}),
             },
         }
-        log('info', 'claudeSessionStart', 'armed', { hostKey, source: input.source, unread: notice !== null })
+        log('info', 'claudeSessionStart', 'armed', { hostKey, pid, source: input.source, unread: notice !== null })
         return { stdout: JSON.stringify(out) + '\n', exitCode: 0 }
     } catch (err) {
         log('error', 'claudeSessionStart', 'arm failed', { error: toSummitError(err, 'claudeSessionStart').toJSON() })
@@ -80,12 +83,18 @@ export async function claudeSessionStart(stdin: string, he: HookEnv): Promise<Ho
     }
 }
 
-// Purpose: FileChanged (asyncRewake): exit 2 with the notice on stderr when this host has unread
-// mail, else exit 0. Never prints watchPaths (that would replace the watch list).
+// Purpose: FileChanged (asyncRewake): exit 2 with the notice on stderr when the session this claude
+// process runs now has unread mail and the changed file is its signal, else exit 0. Never prints
+// watchPaths (that would replace the watch list).
 export async function claudeFileChanged(stdin: string, he: HookEnv): Promise<HookResult> {
     const input = parseStdin(stdin, FileChangedInput, 'claudeFileChanged')
     try {
-        const hostKey = hostKeyForPid('claude', claudePid(he.env, he.ppid))
+        const sessionId = await readSession(he.root, 'claude', claudePid(he.env, he.ppid))
+        if (sessionId === null) {
+            log('warn', 'claudeFileChanged', 'no session recorded for this claude process', { ppid: he.ppid })
+            return { exitCode: 0 }
+        }
+        const hostKey = hostKeyForSession('claude', sessionId)
         const ours = signalPathFor(he.root, hostKey)
         if (input.file_path === undefined || path.resolve(input.file_path) !== ours || input.event === 'unlink') {
             log('debug', 'claudeFileChanged', 'not our signal', { file: input.file_path, event: input.event })
@@ -101,9 +110,24 @@ export async function claudeFileChanged(stdin: string, he: HookEnv): Promise<Hoo
     }
 }
 
-// Purpose: `hook ext-arm`: the pi/OMP extension's arm call. Prints host key, signal path, log file.
-export async function extArm(harness: Harness, pid: number, root: string): Promise<HookResult> {
-    const armed = await armSignal(root, harness, pid)
-    log('info', 'extArm', 'armed', { harness, ...armed })
+// Purpose: `hook ext-arm`: the pi/OMP extension's arm call on every session start or switch. OMP keeps its
+// MCP server across `/new`, so its session is recorded in `.sessions/omp-<pid>.json` for that server; pi
+// hands the session id to its server in the env. Then the session's signal is armed. Prints host key,
+// signal path and log file.
+export async function extArm(
+    harness: 'pi' | 'omp',
+    sessionId: string,
+    pid: number | null,
+    root: string,
+): Promise<HookResult> {
+    const hostKey = hostKeyForSession(harness, sessionId)
+    if (harness === 'omp') {
+        if (pid === null) {
+            throw summitError('SUMMIT_BAD_INPUT', 'ext-arm for omp needs --pid', 'extArm', { harness, sessionId })
+        }
+        await writeSession(root, harness, pid, sessionId)
+    }
+    const armed = await armSignal(root, hostKey)
+    log('info', 'extArm', 'armed', { harness, pid, ...armed })
     return { stdout: JSON.stringify({ ...armed, logFile: logFilePath() }) + '\n', exitCode: 0 }
 }

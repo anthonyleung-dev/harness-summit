@@ -1,12 +1,13 @@
-// Unit tests for name takeover (REVIEW M5, owner decision): a gone holder (no heartbeat for 15 s) loses its
-// name, an unknown holder (OpenCode) loses it only with force, a live holder keeps it; the result says why (O1). A
+// Unit tests for name takeover (REVIEW M5; owner decision 2026-10-10): a live holder keeps its name; any
+// other holder (gone: no heartbeat for 10 s; unknown: OpenCode) loses it only with force, because its
+// session may resume; a forced takeover of a gone holder takes the second look first; the result says why (O1). A
 // rename whose own folder left the group during the call fails and gives a taken-over name back
 // (DELTA-REVIEW-3 E6, DELTA-REVIEW-4 G2).
 import fs from 'node:fs'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { HEARTBEAT_STALE_MS } from '../../src/core/heartbeat.js'
+import { STALE_MS } from '../../src/core/heartbeat.js'
 import { readMembers } from '../../src/core/members.js'
 import { group } from '../../src/flows/group.js'
 import { join } from '../../src/flows/join.js'
@@ -18,7 +19,7 @@ import { runTool } from '../../src/server/server.js'
 import { TOOLS } from '../../src/server/tools.js'
 import { resumedCodex } from '../helpers/agents.js'
 import { callFor, errorCode, opencodeMeta, tmpRoot } from '../helpers/env.js'
-import { ageHeartbeat, agentJson, mapOf, moveFolder, onMapRead } from '../helpers/state.js'
+import { ageBeat, agentJson, mapOf, moveFolder, onMapRead } from '../helpers/state.js'
 
 describe('name takeover', () => {
     let root: string
@@ -64,15 +65,17 @@ describe('name takeover', () => {
         expect(res.structuredContent).toMatchObject({ takeover: { from: joc.uuid, reason: 'forced-unknown' } })
     })
 
-    it('a restarted session takes its name back from the dead agent; the old folder stays, nameless', async () => {
+    it('a new session takes the name of a gone agent only with force; the old folder stays, nameless', async () => {
         const old = callFor(root, 'claude')
         const jo = await join(old)
         await rename(old, 'alice')
-        // The old session exited: its server stopped beating 20 s ago.
-        ageHeartbeat(jo.folder, HEARTBEAT_STALE_MS + 5_000)
+        // The old session exited: its server stopped beating 15 s ago. It may still be resumed.
+        ageBeat(root, jo.hostKey, STALE_MS + 5_000)
         const fresh = callFor(root, 'claude')
         const jf = await join(fresh)
-        expect(await rename(fresh, 'alice')).toMatchObject({
+        const refused = await rename(fresh, 'alice').catch((e: { code: string; message: string }) => e)
+        expect(refused).toMatchObject({ code: 'SUMMIT_NAME_TAKEN', message: expect.stringContaining('may resume') })
+        expect(await rename(fresh, 'alice', true)).toMatchObject({
             name: 'alice',
             takeover: { from: jo.uuid, reason: 'holder-gone' },
         })
@@ -103,14 +106,17 @@ describe('name takeover', () => {
         expect(fs.readdirSync(jb.folder).filter((f) => f.endsWith('.md'))).toEqual([`${joc.uuid}.md`])
     })
 
-    it('a holder that died before its first rename can be replaced in the same call as join <name>', async () => {
-        const ghost = callFor(root, 'pi')
-        const jg = await join(ghost)
-        await rename(ghost, 'erin')
-        ageHeartbeat(jg.folder, HEARTBEAT_STALE_MS + 5_000)
+    it('a forced takeover takes the second look: a holder that beats during it keeps its name', async () => {
+        const holder = callFor(root, 'pi')
+        const jh = await join(holder)
+        await rename(holder, 'erin')
+        ageBeat(root, jh.hostKey, STALE_MS + 5_000)
         const b = callFor(root, 'pi')
         await join(b)
-        expect(await rename(b, 'erin')).toMatchObject({ name: 'erin' })
+        // The holder's laptop was asleep: its server beats again while the claimer takes its second look.
+        setTimeout(() => void whoami(holder), 500)
+        expect(await errorCode(rename(b, 'erin', true))).toBe('SUMMIT_NAME_TAKEN')
+        expect(agentJson(jh.folder).name).toBe('erin')
     })
 
     it('a closed Codex thread reads gone; its first call after a resume beats and protects its name again', async () => {
@@ -118,23 +124,24 @@ describe('name takeover', () => {
         const other = callFor(root, 'claude')
         await join(other)
         const aliveOf = async () => (await members(other)).members.find((m) => m.uuid === jcx.uuid)?.alive
-        // No server beat the thread for longer than 15 s: gone, never "unknown" (only OpenCode is).
+        // No server beat the thread for longer than 10 s: gone, never "unknown" (only OpenCode is).
         expect(await aliveOf()).toBe(false)
         await read(resumed)
         expect(await aliveOf()).toBe(true)
         expect(await errorCode(rename(other, 'cx'))).toBe('SUMMIT_NAME_TAKEN')
         expect(agentJson(jcx.folder).name).toBe('cx')
         // whoami beats too (it reads the identity without requireHost).
-        ageHeartbeat(jcx.folder, HEARTBEAT_STALE_MS + 5_000)
+        ageBeat(root, jcx.hostKey, STALE_MS + 5_000)
         await whoami(resumed)
         expect(await aliveOf()).toBe(true)
     })
 
-    it('a Codex holder whose thread nobody serves loses its name without force (holder-gone)', async () => {
+    it('a Codex holder whose thread nobody serves loses its name only with force (holder-gone)', async () => {
         const { joined: jcx } = await resumedCodex(root, 'cy', 'T-cy')
         const other = callFor(root, 'pi')
         await join(other)
-        expect((await rename(other, 'cy')).takeover).toEqual({ from: jcx.uuid, reason: 'holder-gone' })
+        expect(await errorCode(rename(other, 'cy'))).toBe('SUMMIT_NAME_TAKEN')
+        expect((await rename(other, 'cy', true)).takeover).toEqual({ from: jcx.uuid, reason: 'holder-gone' })
         expect(agentJson(jcx.folder).name).toBeNull()
     })
 

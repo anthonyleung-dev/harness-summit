@@ -5,12 +5,12 @@
 // (`<token> <ISO time>`). A holder releases only its own token, so a holder never deletes another
 // holder's lock (REVIEW m7).
 //
-// A lock is a lease (src/core/lease.ts): while it holds the lock, the holder sets the lock file's mtime
-// to now every LEASE_REFRESH_MS. A lock is stale when its mtime is older than LOCK_STALE_MS (its holder
-// stopped refreshing: it died, or it hangs), or when it holds a token that this process abandoned (its
-// release failed). A live holder keeps its lock however long it holds it (a group move holds
-// `members.lock` while it waits for a `.cursor.lock`). No OS process inspection is involved: the same
-// rule runs on Linux, macOS and Windows.
+// A lock is a lease (src/core/lease.ts): right after the create and then every LEASE_REFRESH_MS while it
+// holds the lock (for at most LOCK_MAX_HOLD_MS), the holder sets the lock file's mtime to now. A lock is
+// stale when its mtime is older than LOCK_STALE_MS (its holder stopped refreshing: it died, or it hangs)
+// and a second look confirms it (no refresh while the waiter waits SECOND_LOOK_MS, so a clock jump or a
+// suspend never breaks a live holder), or when it holds a token that this process abandoned (its release
+// failed). No OS process inspection is involved: the same rule runs on Linux, macOS and Windows.
 //
 // Breakers are serialized by a second lock, `<lock>.break`, so a breaker never moves a lock that
 // another waiter took after an earlier break (D3). Under the break lock the waiter re-reads the lock,
@@ -25,6 +25,7 @@ import { z } from 'zod'
 
 import { hasErrno, summitError } from './errors.js'
 import { readTextFile, renameRetry } from './fsx.js'
+import { confirmGone } from './heartbeat.js'
 import { startLease } from './lease.js'
 import { log } from './log.js'
 
@@ -79,8 +80,7 @@ export function parseLockOwner(content: string): LockOwner | null {
 // process abandoned. A lock without a valid owner line (a holder died between the create and the
 // write) is stale by the same age rule.
 function isStale(lock: LockFile): boolean {
-    const owner = parseLockOwner(lock.content)
-    if (owner !== null && abandonedTokens.has(owner.token)) return true
+    if (isAbandoned(lock)) return true
     const age = Date.now() - lock.mtimeMs
     if (age > LOCK_STALE_MS) log('debug', 'isStale', 'lock not refreshed in time', { age })
     return age > LOCK_STALE_MS
@@ -113,6 +113,9 @@ async function tryCreate(lockPath: string, token: string, missingOk = false): Pr
         created = true
         try {
             await fh.writeFile(formatLockOwner(token))
+            // The lease clock is ours from the start (also on a file system whose server sets the mtime).
+            const now = new Date()
+            await fh.utimes(now, now)
         } finally {
             await fh.close()
         }
@@ -182,10 +185,19 @@ export async function breakStaleLock(lockPath: string, seen: string): Promise<bo
     }
 }
 
-// Purpose: break the lock when it is stale. True when this call removed it.
+// Purpose: tell whether a lock this process abandoned (no second look needed: nobody refreshes it).
+function isAbandoned(lock: LockFile): boolean {
+    const owner = parseLockOwner(lock.content)
+    return owner !== null && abandonedTokens.has(owner.token)
+}
+
+// Purpose: break the lock when it is stale. A lock stale by age gets the second look first (a refresh
+// meanwhile means its holder lives). True when this call removed it.
 async function breakIfStale(lockPath: string): Promise<boolean> {
     const seen = await readLock(lockPath)
-    return seen === null || !isStale(seen) ? false : await breakStaleLock(lockPath, seen.content)
+    if (seen === null || !isStale(seen)) return false
+    if (!isAbandoned(seen) && !(await confirmGone(lockPath, seen.mtimeMs))) return false
+    return await breakStaleLock(lockPath, seen.content)
 }
 
 // Purpose: take the lock and return our token, or fail with SUMMIT_LOCK_TIMEOUT.
