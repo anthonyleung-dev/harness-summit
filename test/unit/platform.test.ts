@@ -81,6 +81,20 @@ describe('modes and path comparison (team review R2)', () => {
         },
     )
 
+    it.skipIf(process.platform === 'win32')(
+        'a symlinked root is left as it is (chmod would change its target)',
+        async () => {
+            const dir = tmpDir('linkroot')
+            const target = path.join(dir, 'real')
+            fs.mkdirSync(target)
+            fs.chmodSync(target, 0o755)
+            const link = path.join(dir, 'root')
+            fs.symlinkSync(target, link)
+            await restrictRoot(link)
+            expect(fs.statSync(target).mode & 0o777).toBe(0o755)
+        },
+    )
+
     it('samePath on Windows ignores letter case in the whole path and the separator form', () => {
         expect(
             samePath(

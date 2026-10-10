@@ -1,11 +1,11 @@
 // summit_send (SPEC §5, §6): append one record to the receiver's folder, then wake the receiver.
 import { randomUUID } from 'node:crypto'
 
-import { agentExists, agentLabel, readAgent, requireAgent } from '../core/agents.js'
+import { agentExists, agentLabel, inboxLabel, readAgent, requireAgent } from '../core/agents.js'
 import { summitError } from '../core/errors.js'
 import { log } from '../core/log.js'
 import { appendRecord } from '../core/mailbox.js'
-import { nameKey, readMembers } from '../core/members.js'
+import { lookupName, readMembers } from '../core/members.js'
 import { agentDir } from '../core/paths.js'
 import { pipe, step } from '../core/pipe.js'
 import { NAME_PATTERN, UUID_PATTERN, type AgentRecord, type MessageRecord } from '../core/schemas.js'
@@ -44,7 +44,7 @@ export async function resolveTarget(root: string, groupKey: string, to: string):
             { to, groupKey },
         )
     }
-    const key = NAME_PATTERN.test(ref) ? nameKey(members, ref) : undefined
+    const key = NAME_PATTERN.test(ref) ? lookupName(members, ref) : undefined
     const uuid = key === undefined ? undefined : members.members[key]
     if (uuid === undefined) {
         log('info', 'resolveTarget', 'unknown name', { to, groupKey })
@@ -94,7 +94,7 @@ const append = step<SendCtx>('append', async (ctx) => {
         ...(ctx.input.replyTo !== undefined ? { replyTo: ctx.input.replyTo } : {}),
         body: ctx.input.message,
     }
-    await appendRecord(agentDir(ctx.call.root, need(ctx.host, 'host').groupKey, target.uuid), agentLabel(self), record)
+    await appendRecord(agentDir(ctx.call.root, need(ctx.host, 'host').groupKey, target.uuid), inboxLabel(self), record)
     return { ...ctx, record }
 })
 

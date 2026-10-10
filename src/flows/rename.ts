@@ -1,36 +1,12 @@
-// summit_rename (SPEC §2, §5): set the display name in the group's name map.
-//
-// Name takeover (REVIEW M5; owner decision 2026-10-10): a live holder (`alive: true`) always keeps its
-// name. Any other holder (`alive: false`: no server beat it for STALE_MS; `"unknown"`: OpenCode, or an
-// agent never beaten) loses it only with `force`, because its session may be resumed later and expect its
-// name back. A forced takeover of a holder that looks gone takes the second look first (a beat during it
-// means alive: refused). The holder keeps its folder; its map entry goes
-// and its agent.json name becomes null, so it can never write a second `<name>.md` next to the new
-// holder. The result says why a name was taken over (`takeover.reason`, O1).
-//
-// A map entry whose uuid has no folder in THAT group is free, and every claim drops such entries
-// (F6): a group move holds the new group's lock from its claim until its folder is in place
-// (src/flows/group.ts), so outside the lock an entry without a folder is always a leftover.
-import { agentExists, isAlive, readAgent, requireAgent, updateAgent } from '../core/agents.js'
+// summit_rename (SPEC §2, §5): set the display name in the group's name map. The claim rules (takeover,
+// case pairs, leftovers) live in src/flows/claim.ts.
+import { requireAgent, updateAgent } from '../core/agents.js'
 import { summitError } from '../core/errors.js'
 import { log } from '../core/log.js'
-import {
-    applyMembersUpdate,
-    nameKeys,
-    updateMembers,
-    withName,
-    withoutUuid,
-    type MembersUpdate,
-} from '../core/members.js'
+import { updateMembers } from '../core/members.js'
 import { pipe, step } from '../core/pipe.js'
-import {
-    isReservedName,
-    NameSchema,
-    type AgentRecord,
-    type Members,
-    type Takeover,
-    type TakeoverReason,
-} from '../core/schemas.js'
+import { NameSchema, type AgentRecord, type Takeover } from '../core/schemas.js'
+import { claimName, restoreHolder, takeoverOf, type TakenOver } from './claim.js'
 import { hostKeyStep, need, requireHostStep, type CallContext, type WithHost } from './context.js'
 
 export interface RenameResult {
@@ -41,29 +17,11 @@ export interface RenameResult {
     takeover: Takeover | null
 }
 
-// A name that a claim took over: the holder's agent.json as it was before the takeover (so a failed
-// call can give the name back, restoreHolder) and why the name was free (O1).
-export interface TakenOver {
-    holder: AgentRecord
-    reason: TakeoverReason
-}
-
 interface RenameCtx extends WithHost {
     name: string
     force: boolean
     agent?: AgentRecord
-    takenOver?: TakenOver
-}
-
-export interface ClaimOptions {
-    force?: boolean
-    // Called under the members lock when the claim took the name over.
-    onTakeover?: (taken: TakenOver) => void
-}
-
-// Purpose: the result form of a takeover (O1): the holder's uuid and the reason, or null.
-export function takeoverOf(taken: TakenOver | undefined): Takeover | null {
-    return taken === undefined ? null : { from: taken.holder.uuid, reason: taken.reason }
+    takenOver?: TakenOver[]
 }
 
 // Purpose: refuse names that cannot be file names or that look like a uuid (the one NameSchema).
@@ -73,126 +31,6 @@ export function validateName(name: string): string {
         throw summitError('SUMMIT_BAD_NAME', parsed.error.issues[0]?.message ?? 'bad name', 'validateName', { name })
     }
     return parsed.data
-}
-
-// Purpose: the current holder of `name` when it is another agent whose folder is in this group, with
-// the map key it holds (which may differ in case). Null when free: our own exact entry, or no entry
-// ignoring case other than ours and leftovers without a folder here (F6). Every case match is judged: a
-// pair that an older version wrote (`Bob` and `bob`, two agents) is refused until one renames.
-async function nameHolder(root: string, groupKey: string, m: Members, name: string, uuid: string) {
-    if (m.members[name] === uuid) return null
-    const holders: { agent: AgentRecord; groupKey: string; key: string }[] = []
-    for (const key of nameKeys(m, name)) {
-        const owner = m.members[key] as string
-        if (owner === uuid) continue
-        const agent = await readAgent(root, groupKey, owner)
-        if (agent !== null) holders.push({ agent, groupKey, key })
-    }
-    if (holders.length > 1) {
-        throw summitError(
-            'SUMMIT_NAME_TAKEN',
-            `name ${name} is held by ${holders.length} agents in ${groupKey} in different letter case; one must rename first`,
-            'nameHolder',
-            { name, groupKey, keys: holders.map((h) => h.key) },
-        )
-    }
-    return holders[0] ?? null
-}
-
-// Purpose: drop every map entry whose uuid has no folder in this group (F6). Caller holds the lock.
-async function withoutLeftovers(root: string, groupKey: string, m: Members): Promise<Members> {
-    const members: Record<string, string> = {}
-    for (const [name, uuid] of Object.entries(m.members)) {
-        if (await agentExists(root, groupKey, uuid)) members[name] = uuid
-        else log('warn', 'withoutLeftovers', 'dropping a map entry without a folder', { groupKey, name, uuid })
-    }
-    return { version: 1, members }
-}
-
-// Purpose: fail with SUMMIT_NAME_TAKEN while the holder of `name` may be alive; return the holder to
-// take over and why it may be taken (or null when the name is free).
-export async function assertNameFree(
-    root: string,
-    groupKey: string,
-    m: Members,
-    name: string,
-    uuid: string,
-    force = false,
-): Promise<{ agent: AgentRecord; groupKey: string; key: string; reason: TakeoverReason } | null> {
-    const holder = await nameHolder(root, groupKey, m, name, uuid)
-    if (holder === null) return null
-    // Without force, any holder keeps the name: no second look is needed to refuse.
-    const alive = await isAlive(root, holder.agent, { confirm: force })
-    if (alive === true || !force) {
-        const hint =
-            alive === true
-                ? ''
-                : `; its holder is not alive now (alive: ${String(alive)}) but its session may resume; pass force (\`--force\` with /sr or /sg) to take the name over`
-        throw summitError(
-            'SUMMIT_NAME_TAKEN',
-            `name ${name} belongs to another agent in ${groupKey}${hint}`,
-            'assertNameFree',
-            { name, groupKey, owner: holder.agent.uuid, alive },
-        )
-    }
-    log('warn', 'assertNameFree', 'taking over a name', {
-        name,
-        groupKey,
-        owner: holder.agent.uuid,
-        alive,
-    })
-    return { ...holder, reason: alive === false ? 'holder-gone' : 'forced-unknown' }
-}
-
-// Purpose: a members.json update that maps `name` to `uuid` (and drops the uuid's old name), taking
-// the name over from a gone holder. Shared by rename and group move.
-export function claimName(
-    root: string,
-    groupKey: string,
-    name: string,
-    uuid: string,
-    opts: ClaimOptions = {},
-): MembersUpdate {
-    return async (m) => {
-        // A claim chooses a name anew: a Windows device name is refused here too (an agent named so by an
-        // older version renames away first).
-        if (isReservedName(name)) {
-            throw summitError('SUMMIT_BAD_NAME', `name ${name} is a Windows device name; rename first`, 'claimName', {
-                name,
-                groupKey,
-            })
-        }
-        const holder = await assertNameFree(root, groupKey, m, name, uuid, opts.force)
-        if (holder !== null) {
-            // Never creates a folder: the holder may have moved or left (updateAgent returns null).
-            await updateAgent(root, holder.groupKey, holder.agent.uuid, { name: null }, { lockHeld: true }).catch(
-                (err) => log('warn', 'claimName', 'could not clear the old holder name', { error: String(err) }),
-            )
-            opts.onTakeover?.({ holder: holder.agent, reason: holder.reason })
-        }
-        return withName(withoutUuid(await withoutLeftovers(root, groupKey, m), uuid), name, uuid, holder?.key)
-    }
-}
-
-// Purpose: undo a claim of `name` by `uuid` (F7, G2): drop the claimer's map entry and give a name
-// that the claim took over back to its holder (map entry and agent.json name). Caller holds the
-// group's lock. Shared by rename (its folder left the group) and the group move (a later step failed).
-export async function restoreHolder(
-    root: string,
-    groupKey: string,
-    name: string,
-    uuid: string,
-    taken: TakenOver | undefined,
-): Promise<void> {
-    await applyMembersUpdate(root, groupKey, (m) => {
-        const next = withoutUuid(m, uuid)
-        return taken === undefined ? next : withName(next, taken.holder.name ?? name, taken.holder.uuid)
-    })
-    if (taken === undefined || taken.holder.name === null) return
-    const { holder } = taken
-    const restored = await updateAgent(root, groupKey, holder.uuid, { name: holder.name }, { lockHeld: true })
-    if (restored !== null)
-        log('warn', 'restoreHolder', 'taken-over name given back', { groupKey, uuid: holder.uuid, name })
 }
 
 // Step: validate the requested name.
@@ -213,7 +51,7 @@ async function setOwnName(
     groupKey: string,
     uuid: string,
     name: string,
-    taken: TakenOver | undefined,
+    taken: TakenOver[] | undefined,
 ): Promise<void> {
     if ((await updateAgent(root, groupKey, uuid, { name }, { lockHeld: true })) !== null) return
     await restoreHolder(root, groupKey, name, uuid, taken)
@@ -229,7 +67,7 @@ async function setOwnName(
 // map and agent.json never disagree.
 const claim = step<RenameCtx>('claimName', async (ctx) => {
     const host = need(ctx.host, 'host')
-    let takenOver: TakenOver | undefined
+    let takenOver: TakenOver[] | undefined
     await updateMembers(
         ctx.call.root,
         host.groupKey,

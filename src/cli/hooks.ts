@@ -13,7 +13,7 @@ import { noticeForHostKey } from '../core/notice.js'
 import { signalPathFor } from '../core/paths.js'
 import { samePath } from '../core/project.js'
 import type { Harness } from '../core/schemas.js'
-import { readSession, writeSession } from '../core/sessions.js'
+import { readSession, renewSession, writeSession } from '../core/sessions.js'
 import { ensureSignal } from '../core/signal.js'
 
 export interface HookResult {
@@ -111,11 +111,8 @@ async function refreshSession(
 ): Promise<void> {
     if (sessionId === undefined || sessionId === '') return
     const pid = claudePid(he.env, he.ppid)
-    if (opts.sameIdOnly === true && (await readSession(he.root, 'claude', pid)) !== sessionId) {
-        log('debug', fn, 'stdin session differs from the recorded one; not refreshed', { sessionId })
-        return
-    }
-    await writeSession(he.root, 'claude', pid, sessionId).catch((err) =>
+    const write = opts.sameIdOnly === true ? renewSession : writeSession
+    await write(he.root, 'claude', pid, sessionId).catch((err) =>
         log('warn', fn, 'session refresh failed', { error: toSummitError(err, fn).toJSON() }),
     )
 }
@@ -164,7 +161,8 @@ export async function claudeFileChanged(stdin: string, he: HookEnv): Promise<Hoo
 // Purpose: `hook ext-session`: the OMP extension renews its session file on every agent start (same
 // writer), so a server that OMP restarted later trusts it again from the next turn. Prints nothing.
 export async function extSession(sessionId: string, pid: number, root: string): Promise<HookResult> {
-    await writeSession(root, 'omp', pid, sessionId)
+    // Renew only (renewSession): a slow spawn that ends after an OMP `/new` must not put the old id back.
+    await renewSession(root, 'omp', pid, sessionId)
     return { exitCode: 0 }
 }
 

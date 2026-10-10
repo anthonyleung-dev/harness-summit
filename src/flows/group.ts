@@ -26,8 +26,8 @@ import { agentDir, cursorLock, DIR_MODE, groupDir } from '../core/paths.js'
 import { pipe, rollBack, step } from '../core/pipe.js'
 import { namedGroupKey } from '../core/project.js'
 import type { AgentRecord, Takeover } from '../core/schemas.js'
+import { claimName, restoreHolder, takeoverOf, type TakenOver } from './claim.js'
 import { hostKeyStep, need, requireHostStep, type CallContext, type WithHost } from './context.js'
-import { claimName, restoreHolder, takeoverOf, type TakenOver } from './rename.js'
 
 export interface GroupResult {
     uuid: string
@@ -46,7 +46,7 @@ interface GroupCtx extends WithHost {
     previousKey?: string
     agent?: AgentRecord
     // The name the claim took over: the holder's agent.json before the takeover, and the reason.
-    takenOver?: TakenOver
+    takenOver?: TakenOver[]
 }
 
 // Step: validate the group name.
@@ -77,7 +77,7 @@ const claimNewName = step<GroupCtx>(
         const agent = need(ctx.agent, 'agent')
         if (agent.name === null) return ctx
         const newKey = need(ctx.newKey, 'newKey')
-        let takenOver: TakenOver | undefined
+        let takenOver: TakenOver[] | undefined
         const claim = claimName(ctx.call.root, newKey, agent.name, agent.uuid, {
             force: ctx.force,
             onTakeover: (taken) => (takenOver = taken),

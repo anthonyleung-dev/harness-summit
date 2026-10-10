@@ -6,10 +6,17 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { extSession } from '../../src/cli/hooks.js'
 import { CLEANUP_AGE_MS, sleep, STALE_MS } from '../../src/core/freshness.js'
 import { beat, beatTime } from '../../src/core/heartbeat.js'
 import { sessionFile, sessionsDir } from '../../src/core/paths.js'
-import { cleanupSessions, SESSION_CLOCK_TOLERANCE_MS, writeSessionSync } from '../../src/core/sessions.js'
+import {
+    cleanupSessions,
+    readSession,
+    renewSession,
+    SESSION_CLOCK_TOLERANCE_MS,
+    writeSessionSync,
+} from '../../src/core/sessions.js'
 import { join } from '../../src/flows/join.js'
 import { whoami } from '../../src/flows/query.js'
 import { startServing } from '../../src/server/server.js'
@@ -67,5 +74,23 @@ describe('session file trust', () => {
         expect(fs.existsSync(sessionFile(root, 'claude', 101))).toBe(false)
         expect(fs.existsSync(sessionFile(root, 'claude', 102))).toBe(true)
         expect(fs.existsSync(sessionFile(root, 'omp', 103))).toBe(true)
+    })
+})
+
+describe('renewing a session never switches it (FileChanged, OMP agent_start)', () => {
+    it('renews the recorded session, writes a missing file, and leaves another recorded session alone', async () => {
+        const root = tmpRoot()
+        const pid = fakePid()
+        expect(await renewSession(root, 'omp', pid, 'S-first')).toBe(true)
+        expect(await readSession(root, 'omp', pid)).toBe('S-first')
+        writeSessionSync(root, 'omp', pid, 'S-new', new Date(Date.now() - 60_000))
+        // A slow renew for the session before /new arrives late: nothing changes.
+        expect(await renewSession(root, 'omp', pid, 'S-first')).toBe(false)
+        expect(await readSession(root, 'omp', pid)).toBe('S-new')
+        expect(await renewSession(root, 'omp', pid, 'S-new')).toBe(true)
+        expect(await readSession(root, 'omp', pid, { notBefore: Date.now() - 5_000 })).toBe('S-new')
+        // The CLI door of the OMP extension renews only, too.
+        await extSession('S-first', pid, root)
+        expect(await readSession(root, 'omp', pid)).toBe('S-new')
     })
 })

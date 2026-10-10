@@ -7,7 +7,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 
-import { summitError, toSummitError } from '../core/errors.js'
+import { hasErrno, summitError, toSummitError } from '../core/errors.js'
 import { defaultExec, type Exec } from '../core/exec.js'
 import { cleanupBeats, startHeartbeat } from '../core/heartbeat.js'
 import { isSignalHarness, PI_SESSION_ENV, type RequestMeta } from '../core/hostKey.js'
@@ -149,9 +149,17 @@ function installExitHandlers(harness: Harness, stopHeartbeat: () => void): void 
 // the OS has no POSIX modes (Windows) or the root does not exist yet (created 0700 on first write).
 export async function restrictRoot(root: string, platform: NodeJS.Platform = process.platform): Promise<void> {
     if (platform === 'win32') return
-    await fs
-        .chmod(root, DIR_MODE)
-        .catch((err: unknown) => log('debug', 'restrictRoot', 'root mode not changed', { root, error: String(err) }))
+    try {
+        // A symlinked root is the user's own setup: chmod would change the target, so leave it alone.
+        if ((await fs.lstat(root)).isSymbolicLink()) {
+            log('warn', 'restrictRoot', 'summit root is a symlink; its mode is left as it is', { root })
+            return
+        }
+        await fs.chmod(root, DIR_MODE)
+    } catch (err) {
+        const level = hasErrno(err, 'ENOENT') ? 'debug' : 'warn'
+        log(level, 'restrictRoot', 'root mode not changed', { root, error: String(err) })
+    }
 }
 
 // Purpose: start this server's heartbeat (SPEC §7): drop heartbeat files of long-ended sessions, then

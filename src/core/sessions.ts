@@ -52,6 +52,22 @@ export async function writeSession(root: string, harness: string, pid: number, s
     log('info', 'writeSession', 'session recorded', { harness, pid, sessionId })
 }
 
+// Purpose: renew the `at` of the session that host process `pid` runs, without ever switching it: write
+// only when the recorded id is `sessionId`, or when no file exists (nothing to switch from). Used by the
+// hooks that may run late (a Claude FileChanged wake, the OMP agent_start renew): one that started
+// before a `/clear` or `/new` and ends after it must not put the old session back. Residual race: two
+// writers inside the few ms between this read and the write; the next SessionStart or prompt corrects
+// it. True when written.
+export async function renewSession(root: string, harness: string, pid: number, sessionId: string): Promise<boolean> {
+    const recorded = await readSession(root, harness, pid)
+    if (recorded !== null && recorded !== sessionId) {
+        log('debug', 'renewSession', 'another session is recorded; not renewed', { harness, pid, sessionId })
+        return false
+    }
+    await writeSession(root, harness, pid, sessionId)
+    return true
+}
+
 // Purpose: the synchronous form of writeSession, with a chosen `at`, for in-process test callers that
 // must stay synchronous (test/helpers). Not atomic: no reader runs while a test sets up a caller.
 export function writeSessionSync(root: string, harness: string, pid: number, sessionId: string, at = new Date()): void {

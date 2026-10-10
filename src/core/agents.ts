@@ -8,13 +8,24 @@ import { beatTime } from './heartbeat.js'
 import { log } from './log.js'
 import { lockGroup } from './members.js'
 import { agentDir, agentFile, aliveFile, DIR_MODE, groupDir } from './paths.js'
-import { AgentRecordSchema, UUID_PATTERN, type AgentRecord } from './schemas.js'
+import { AgentRecordSchema, isReservedName, UUID_PATTERN, type AgentRecord } from './schemas.js'
 
 export type Alive = boolean | 'unknown'
 
-// Purpose: label used in file names and notices: the display name, else the uuid.
+// Purpose: label used in records and notices: the display name, else the uuid.
 export function agentLabel(agent: Pick<AgentRecord, 'name' | 'uuid'>): string {
     return agent.name ?? agent.uuid
+}
+
+// Purpose: the sender part of an inbox file name (`<label>.md`, the one inbox-name rule): agentLabel,
+// except on Windows for a Windows device name an older version allowed (`aux.md` would be the AUX
+// device): then the sender's uuid. The record still names the sender by its label.
+export function inboxLabel(
+    agent: Pick<AgentRecord, 'name' | 'uuid'>,
+    platform: NodeJS.Platform = process.platform,
+): string {
+    const label = agentLabel(agent)
+    return platform === 'win32' && isReservedName(label) ? agent.uuid : label
 }
 
 // Purpose: read one agent.json, or null when the folder is gone.

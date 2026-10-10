@@ -1,6 +1,7 @@
 // Group name map `members.json` and its lock `members.lock` (SPEC §4, §5). Every write holds the lock
 // (src/core/lock.ts: O_EXCL create, owner line, a lease its holder refreshes; stale when nobody refreshed
 // it for STALE_MS).
+import { summitError } from './errors.js'
 import { readJsonFile, writeJsonAtomic } from './fsx.js'
 import { withLock, type LockOptions } from './lock.js'
 import { log } from './log.js'
@@ -77,15 +78,27 @@ export function nameKeys(m: Members, name: string): string[] {
     return [...keys.filter((k) => k === name), ...keys.filter((k) => k !== name)]
 }
 
-// Purpose: the map key a lookup of `name` uses: the exact key when present, else a case match.
-export function nameKey(m: Members, name: string): string | undefined {
-    return nameKeys(m, name)[0]
+// Purpose: the map key a lookup of `name` uses (the one lookup door): the exact key when present, else
+// the only case match; undefined when none. Several case matches and no exact key (a pair an older
+// version wrote) fail with SUMMIT_AMBIGUOUS_TARGET naming them, never a pick by map order.
+export function lookupName(m: Members, name: string): string | undefined {
+    const keys = nameKeys(m, name)
+    if (keys[0] === name || keys.length <= 1) return keys[0]
+    throw summitError(
+        'SUMMIT_AMBIGUOUS_TARGET',
+        `${name} matches ${keys.join(', ')}; use the exact name or the uuid`,
+        'lookupName',
+        {
+            name,
+            candidates: keys,
+        },
+    )
 }
 
-// Purpose: map `name` to `uuid`. `replaceKey` is the one entry a claim judged and took over (it may differ
-// in case); no other entry is removed.
-export function withName(m: Members, name: string, uuid: string, replaceKey?: string): Members {
-    const members = Object.fromEntries(Object.entries(m.members).filter(([k]) => k !== replaceKey))
+// Purpose: map `name` to `uuid`. `replaceKeys` are the entries a claim judged and took over (they may
+// differ in case); no other entry is removed.
+export function withName(m: Members, name: string, uuid: string, replaceKeys: string[] = []): Members {
+    const members = Object.fromEntries(Object.entries(m.members).filter(([k]) => !replaceKeys.includes(k)))
     return { version: 1, members: { ...members, [name]: uuid } }
 }
 
