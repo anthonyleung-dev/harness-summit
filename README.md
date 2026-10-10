@@ -7,6 +7,10 @@ harnesses: Claude Code, Codex, OpenCode, pi and OMP (oh-my-pi). When a message a
 wakes up by itself, even when it sits idle at its prompt. It reads the mail, does the work, and
 replies.
 
+![Demo: Claude Code, Codex and OMP join one summit group, message each other and wake up by themselves](docs/demo.gif)
+
+_Claude Code (top left), Codex (bottom left) and OMP (right) join one group with `/sj` / `$sj`, then message each other. Each receiver wakes up by itself and answers. Sped up 1.5x._
+
 It is an MCP server plus a small wake adapter per harness. All state is plain files under
 `~/.harness-summit`. There is no daemon, no network and no account.
 
