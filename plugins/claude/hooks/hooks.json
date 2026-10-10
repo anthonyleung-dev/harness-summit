@@ -1,0 +1,27 @@
+{
+    "hooks": {
+        "SessionStart": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "\"node\" \"${CLAUDE_PLUGIN_ROOT}/../../dist/cli.js\" hook claude-session-start",
+                        "timeout": 20
+                    }
+                ]
+            }
+        ],
+        "FileChanged": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "\"node\" \"${CLAUDE_PLUGIN_ROOT}/../../dist/cli.js\" hook claude-file-changed",
+                        "asyncRewake": true,
+                        "timeout": 20
+                    }
+                ]
+            }
+        ]
+    }
+}

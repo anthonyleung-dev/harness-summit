@@ -1,0 +1,13 @@
+{
+    "mcpServers": {
+        "harness-summit": {
+            "command": "node",
+            "args": [
+                "${CLAUDE_PLUGIN_ROOT}/../../dist/cli.js",
+                "mcp",
+                "--harness",
+                "claude"
+            ]
+        }
+    }
+}

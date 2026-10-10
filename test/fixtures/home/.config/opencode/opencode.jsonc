@@ -1,0 +1,11 @@
+{
+  // user settings: keep these comments
+  "$schema": "https://opencode.ai/config.json",
+  "model": "spark/glm",
+  /* block comment */
+  "mcp": {
+    "servers": {
+      "qmd": { "type": "local", "command": ["qmd", "mcp"] }, // trailing comment
+    },
+  },
+}

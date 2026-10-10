@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "qmd": {
+      "command": "qmd",
+      "args": ["mcp"]
+    },
+    "hakiri-memory": {
+      "command": "hakiri",
+      "args": ["mcp"],
+      "env": { "HAKIRI_SCOPE": "user" }
+    }
+  }
+}

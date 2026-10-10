@@ -1,0 +1,22 @@
+model = "gpt-6-astra"
+model_reasoning_effort = "medium"
+
+[mcp_servers.blender]
+command = "uvx"
+args = ["blender-mcp"]
+
+[mcp_servers.blender.env]
+BLENDER_HOST = "localhost"
+
+[mcp_servers.blender.tools.get_addon_status]
+approval_mode = "approve"
+
+[mcp_servers.qmd]
+command = "qmd"
+args = ["mcp"]
+
+[projects."/home/user/work/app"]
+trust_level = "trusted"
+
+[features]
+hooks = true

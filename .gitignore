@@ -1,0 +1,16 @@
+node_modules
+dist
+*.log
+
+# Development notes: audit, live probes, reviews, fix logs and demo runs. They hold
+# machine-specific paths and pids, so they stay local and are not published.
+AUDIT.md
+BUILD-LOG.md
+DELTA-REVIEW-*.md
+DEMO.md
+FIXES.md
+FIXES-LOG.md
+INSTALL-TEST.md
+RETEST.md
+REVIEW.md
+probes/

@@ -1,0 +1,19 @@
+{
+    "compilerOptions": {
+        "target": "es2023",
+        "lib": ["es2023"],
+        "module": "nodenext",
+        "moduleResolution": "nodenext",
+        "types": ["node"],
+        "strict": true,
+        "noUncheckedIndexedAccess": true,
+        "noImplicitOverride": true,
+        "esModuleInterop": true,
+        "skipLibCheck": true,
+        "forceConsistentCasingInFileNames": true,
+        "resolveJsonModule": true,
+        "outDir": "dist",
+        "rootDir": "."
+    },
+    "include": ["src", "test", "adapters", "vitest.config.ts"]
+}
