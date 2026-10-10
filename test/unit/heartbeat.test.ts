@@ -73,6 +73,13 @@ describe('heartbeat liveness', () => {
         expect(await beatHostKey(root, 'pi-1')).toBe(false)
     })
 
+    it('a Codex call registers its thread, so the timer of that server keeps beating it', async () => {
+        const j = await join(callFor(root, 'codex', { meta: codexMeta('T-registered') }))
+        ageHeartbeat(j.folder, HEARTBEAT_STALE_MS * 2)
+        stop = startHeartbeat(root, 100)
+        await until(async () => ((await ageOf(j.folder)) ?? Infinity) < 1_000, 3_000)
+    })
+
     it('the server timer beats every served host key until it stops', async () => {
         const j = await join(callFor(root, 'codex', { meta: codexMeta('T-timer') }))
         ageHeartbeat(j.folder, HEARTBEAT_STALE_MS * 2)
