@@ -1,14 +1,13 @@
-// Unit tests for lock staleness by owner process (DELTA-REVIEW-2 D3, D4, N4): a lock is stale only when
-// its owner process is gone, breakers are serialized so a fresh lock is never moved, and a lock that
-// moves with its folder is released where it is now.
+// Unit tests for lock staleness (DELTA-REVIEW-2 D3, D4, N4; SPEC §5 leases): a lock is stale only when
+// nobody refreshed it for LOCK_STALE_MS (or this process abandoned it), breakers are serialized so a fresh
+// lock is never moved, and a lock that moves with its folder is released where it is now.
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { breakStaleLock, LOCK_STALE_MS, parseLockOwner, sleep, withLock } from '../../src/core/lock.js'
-import { processStartTime } from '../../src/core/proc.js'
-import { deadPid, errno, livePid, tmpDir } from '../helpers/env.js'
+import { errno, tmpDir } from '../helpers/env.js'
 import { ageFile, writeLockFile } from '../helpers/state.js'
 
 // Purpose: run `fn` as one holder of `lock` and record the most holders seen at once in `count`.
@@ -25,46 +24,44 @@ describe('lock owner', () => {
         vi.restoreAllMocks()
     })
 
-    it('reads the owner line of the round-3 and round-2 formats and nothing else', () => {
-        expect(parseLockOwner('t 42 9001 2026-10-10T00:00:00.000Z\n')).toEqual({ token: 't', pid: 42, start: 9001 })
-        expect(parseLockOwner('t 42 - 2026\n')).toEqual({ token: 't', pid: 42, start: null })
-        expect(parseLockOwner('t 42 2026-10-10T00:00:00.000Z\n')).toEqual({ token: 't', pid: 42, start: null })
+    it('reads the current owner line and the two older ones, and nothing else', () => {
+        expect(parseLockOwner('t 2026-10-10T00:00:00.000Z\n')).toEqual({ token: 't' })
+        expect(parseLockOwner('t 42 9001 2026-10-10T00:00:00.000Z\n')).toEqual({ token: 't' })
+        expect(parseLockOwner('t 42 - 2026\n')).toEqual({ token: 't' })
+        expect(parseLockOwner('t 42 2026-10-10T00:00:00.000Z\n')).toEqual({ token: 't' })
         expect(parseLockOwner('')).toBeNull()
         expect(parseLockOwner('old')).toBeNull()
         expect(parseLockOwner('t x - 2026')).toBeNull()
+        expect(parseLockOwner('a b c d e')).toBeNull()
     })
 
-    it('a lock whose owner process is alive is never stale, however old (D4)', async () => {
-        const lock = path.join(tmpDir('alive'), 'x.lock')
-        await withLock(lock, async () => {
-            ageFile(lock, LOCK_STALE_MS * 6)
-            const content = fs.readFileSync(lock, 'utf8')
-            expect(content).toContain(` ${process.pid} `)
-            expect(await breakStaleLock(lock, content)).toBe(false)
-            expect(fs.readFileSync(lock, 'utf8')).toBe(content)
-        })
-        const pid = livePid()
-        const other = writeLockFile(lock, 'other-live', pid, { start: processStartTime(pid), ageMs: LOCK_STALE_MS * 6 })
-        expect(await breakStaleLock(lock, other)).toBe(false)
-        expect(fs.readFileSync(lock, 'utf8')).toBe(other)
+    it('a lock refreshed within LOCK_STALE_MS is never broken; one not refreshed for longer is (D4)', async () => {
+        const lock = path.join(tmpDir('age'), 'x.lock')
+        const fresh = writeLockFile(lock, 'held', { ageMs: LOCK_STALE_MS - 2_000 })
+        expect(await breakStaleLock(lock, fresh)).toBe(false)
+        expect(fs.readFileSync(lock, 'utf8')).toBe(fresh)
+        ageFile(lock, LOCK_STALE_MS + 1_000)
+        expect(await breakStaleLock(lock, fresh)).toBe(true)
+        expect(fs.readdirSync(path.dirname(lock))).toEqual([])
     })
 
-    it('a lock whose owner process is gone breaks at once, without waiting for an age (D4)', async () => {
+    it('a waiter takes a lock its holder stopped refreshing, without waiting for its own timeout', async () => {
         const lock = path.join(tmpDir('dead'), 'x.lock')
-        writeLockFile(lock, 'crashed', await deadPid())
+        writeLockFile(lock, 'crashed', { ageMs: LOCK_STALE_MS + 1_000 })
         const started = Date.now()
         await withLock(lock, async () => {})
         expect(Date.now() - started).toBeLessThan(2_000)
         expect(fs.readdirSync(path.dirname(lock))).toEqual([])
     })
 
-    it('a lock this process left behind (its release failed) breaks at once for this process', async () => {
-        const lock = path.join(tmpDir('own'), 'x.lock')
-        writeLockFile(lock, 'left-behind', process.pid)
-        const started = Date.now()
-        await withLock(lock, async () => {})
-        expect(Date.now() - started).toBeLessThan(2_000)
-        expect(fs.readdirSync(path.dirname(lock))).toEqual([])
+    it('a lock left by an older server (pid in its owner line) breaks by the same age rule', async () => {
+        for (const legacy of ['round2', 'round3'] as const) {
+            const lock = path.join(tmpDir('legacy'), 'x.lock')
+            const content = writeLockFile(lock, 'old', { legacy })
+            expect(await breakStaleLock(lock, content)).toBe(false)
+            ageFile(lock, LOCK_STALE_MS + 1_000)
+            expect(await breakStaleLock(lock, content)).toBe(true)
+        }
     })
 
     it('a lock this process failed to remove on release breaks at once for its next caller', async () => {
@@ -95,7 +92,7 @@ describe('lock owner', () => {
 
     it('a waiter late to a break never moves the fresh lock, so a third waiter never joins its holder (D3)', async () => {
         const lock = path.join(tmpDir('two'), 'x.lock')
-        const stale = writeLockFile(lock, 'S', await deadPid(), { ageMs: LOCK_STALE_MS * 6 })
+        const stale = writeLockFile(lock, 'S', { ageMs: LOCK_STALE_MS * 6 })
         const count = { now: 0, most: 0 }
         const w2 = holder(lock, count, 300)
         await sleep(50)
@@ -115,7 +112,7 @@ describe('lock owner', () => {
 
     it('a waiter late to a break never puts back a lock its holder already released (no orphan, D3)', async () => {
         const lock = path.join(tmpDir('orphan'), 'x.lock')
-        const stale = writeLockFile(lock, 'S', await deadPid(), { ageMs: LOCK_STALE_MS * 6 })
+        const stale = writeLockFile(lock, 'S', { ageMs: LOCK_STALE_MS * 6 })
         let release = () => {}
         const w2 = withLock(lock, () => new Promise<void>((r) => (release = r)))
         await sleep(50)
@@ -136,7 +133,7 @@ describe('lock owner', () => {
 
     it('two waiters that both saw one stale lock break it one after the other: nothing is ever put back (D3)', async () => {
         const lock = path.join(tmpDir('pair'), 'x.lock')
-        writeLockFile(lock, 'S', await deadPid())
+        writeLockFile(lock, 'S', { ageMs: LOCK_STALE_MS * 6 })
         const realRename = fsp.rename
         let paused = false
         // The first break pauses between its checks and its rename, the widest gap a breaker has.
@@ -156,11 +153,11 @@ describe('lock owner', () => {
         expect(fs.readdirSync(path.dirname(lock))).toEqual([])
     })
 
-    it('breakers wait for the break lock; an old break lock of a dead breaker is removed (D3)', async () => {
+    it('breakers wait for the break lock; a break lock older than LOCK_STALE_MS is removed (D3)', async () => {
         const lock = path.join(tmpDir('brk'), 'x.lock')
-        const stale = writeLockFile(lock, 'S', await deadPid())
-        // A live breaker holds the break lock: nobody else breaks now.
-        writeLockFile(`${lock}.break`, 'B', livePid())
+        const stale = writeLockFile(lock, 'S', { ageMs: LOCK_STALE_MS * 6 })
+        // A breaker is inside its break: its break lock is fresh, so nobody else breaks now.
+        writeLockFile(`${lock}.break`, 'B')
         expect(await breakStaleLock(lock, stale)).toBe(false)
         expect(fs.readFileSync(lock, 'utf8')).toBe(stale)
         // The same break lock after LOCK_STALE_MS (a break takes a few file operations): removed.

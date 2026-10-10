@@ -72,6 +72,12 @@ export function cursorLock(folder: string): string {
     return path.join(folder, '.cursor.lock')
 }
 
+// Purpose: the liveness heartbeat of an agent folder (its mtime is the last beat of the serving MCP
+// server, SPEC §7).
+export function heartbeatFile(folder: string): string {
+    return path.join(folder, '.heartbeat')
+}
+
 // Purpose: epoch ms of the last wake of an agent (written by the waking sender).
 export function lastWakeFile(folder: string): string {
     return path.join(folder, '.lastwake')

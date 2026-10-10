@@ -8,7 +8,7 @@ import { cursorLock, lastWakeFile } from '../../src/core/paths.js'
 import { join } from '../../src/flows/join.js'
 import { read } from '../../src/flows/read.js'
 import { send } from '../../src/flows/send.js'
-import { callFor, codexMeta, livePid, recordingExec, tmpRoot } from '../helpers/env.js'
+import { callFor, codexMeta, recordingExec, tmpRoot } from '../helpers/env.js'
 import { readJson } from '../helpers/state.js'
 
 describe('wake decision under concurrency', () => {
@@ -19,7 +19,7 @@ describe('wake decision under concurrency', () => {
 
     it('a send during a read in progress waits for the read, then wakes for the mail the read missed (F4)', async () => {
         const rx = callFor(root, 'codex', { meta: codexMeta('T-rx') })
-        const tx = callFor(root, 'claude', { ppid: livePid() })
+        const tx = callFor(root, 'claude')
         const jr = await join(rx)
         await join(tx)
         expect((await send(tx, { to: jr.uuid, message: 'm1' })).wake).toBe('sent')
@@ -43,8 +43,8 @@ describe('wake decision under concurrency', () => {
     it('a second sender during a slow wake command sees the claim and skips: one paid turn (F5)', async () => {
         const slow = recordingExec(undefined, false, 400)
         const rx = callFor(root, 'codex', { meta: codexMeta('T-rx') })
-        const a = callFor(root, 'claude', { ppid: livePid(), exec: slow })
-        const b = callFor(root, 'claude', { ppid: livePid(), exec: slow })
+        const a = callFor(root, 'claude', { exec: slow })
+        const b = callFor(root, 'claude', { exec: slow })
         const jr = await join(rx)
         await join(a)
         await join(b)
@@ -58,8 +58,8 @@ describe('wake decision under concurrency', () => {
     it('a failed wake removes its own claim and never a later claim of another sender (F5)', async () => {
         const failing = recordingExec({ code: 1, stdout: '', stderr: 'boom' }, false, 400)
         const rx = callFor(root, 'codex', { meta: codexMeta('T-rx') })
-        const a = callFor(root, 'claude', { ppid: livePid(), exec: failing })
-        const b = callFor(root, 'claude', { ppid: livePid() })
+        const a = callFor(root, 'claude', { exec: failing })
+        const b = callFor(root, 'claude')
         const jr = await join(rx)
         await join(a)
         await join(b)

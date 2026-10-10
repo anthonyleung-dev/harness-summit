@@ -5,15 +5,14 @@ import { randomUUID } from 'node:crypto'
 import { readAgent, updateAgent, writeAgent } from '../core/agents.js'
 import { summitError } from '../core/errors.js'
 import { codexThreadId, isPidKeyed, opencodeSessionId } from '../core/hostKey.js'
-import { hostStartFor, loadHost, writeHost } from '../core/identity.js'
+import { loadHost, writeHost } from '../core/identity.js'
 import { log } from '../core/log.js'
 import { SUMMIT_GUIDANCE } from '../core/notice.js'
 import { mailboxOf, signalPathFor } from '../core/paths.js'
 import { pipe, step } from '../core/pipe.js'
-import { processStartTime } from '../core/proc.js'
 import { defaultGroupKey, projectRootOf, resolveCwd } from '../core/project.js'
 import type { AgentRecord, HostRecord, Wake } from '../core/schemas.js'
-import { agentPidFor, hostKeyStep, need, type CallContext, type WithHost } from './context.js'
+import { agentPidFor, beatCaller, hostKeyStep, need, type CallContext, type WithHost } from './context.js'
 
 export interface JoinResult {
     uuid: string
@@ -38,7 +37,7 @@ export function wakeRecordFor(call: CallContext, hostKey: string): Wake {
     return { type: 'opencode-prompt', sessionID: need(opencodeSessionId(call.meta), 'sessionID') }
 }
 
-// Step: load the existing identity (stale records read as none; a moved folder is located).
+// Step: load the existing identity (a moved folder is located).
 const loadExisting = step<JoinCtx>('loadExisting', async (ctx) => {
     const host = await loadHost(ctx.call.root, need(ctx.hostKey, 'hostKey'))
     if (host === null) return ctx
@@ -49,23 +48,8 @@ const loadExisting = step<JoinCtx>('loadExisting', async (ctx) => {
 const buildAgent = step<JoinCtx>('buildAgent', async (ctx) => {
     const { call } = ctx
     const hostKey = need(ctx.hostKey, 'hostKey')
-    const pid = agentPidFor(call)
-    const base = {
-        harness: call.harness,
-        hostKey,
-        pid,
-        pidStart: pid === null ? null : processStartTime(pid),
-        wake: wakeRecordFor(call, hostKey),
-    }
-    const hostStart = isPidKeyed(call.harness) ? hostStartFor(hostKey) : null
-    if (ctx.existing) {
-        const host = need(ctx.host, 'host')
-        return {
-            ...ctx,
-            agent: { ...ctx.existing, ...base },
-            host: { ...host, hostStart: host.hostStart ?? hostStart },
-        }
-    }
+    const base = { harness: call.harness, hostKey, pid: agentPidFor(call), wake: wakeRecordFor(call, hostKey) }
+    if (ctx.existing) return { ...ctx, agent: { ...ctx.existing, ...base } }
     const { cwd, cwdSource } = await resolveCwd(call.harness, call.meta, call.exec)
     const projectRoot = projectRootOf(cwd)
     const joinedAt = new Date().toISOString()
@@ -84,7 +68,6 @@ const buildAgent = step<JoinCtx>('buildAgent', async (ctx) => {
         harness: call.harness,
         hostKey,
         joinedAt,
-        hostStart,
     }
     log('debug', 'join.buildAgent', 'new agent', { hostKey, uuid: agent.uuid, cwdSource })
     return { ...ctx, agent, host }
@@ -103,7 +86,8 @@ async function refreshExisting(root: string, groupKey: string, agent: AgentRecor
     })
 }
 
-// Step: write agent.json first, then the host record (a host record never points at no folder).
+// Step: write agent.json first, then the host record (a host record never points at no folder), then
+// the first heartbeat, so a fresh agent reads alive at once (SPEC §7).
 const persist = step<JoinCtx>('persist', async (ctx) => {
     const host = need(ctx.host, 'host')
     const { root } = ctx.call
@@ -111,6 +95,7 @@ const persist = step<JoinCtx>('persist', async (ctx) => {
     if (ctx.existing) agent = await refreshExisting(root, host.groupKey, agent)
     else await writeAgent(root, host.groupKey, agent)
     await writeHost(root, host)
+    await beatCaller(ctx.call, host)
     return { ...ctx, agent }
 })
 

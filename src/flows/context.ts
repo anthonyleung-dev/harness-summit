@@ -1,10 +1,11 @@
 // Shared context and steps for the tool flows.
-import { refreshAgentPid } from '../core/agents.js'
 import { summitError, toSummitError } from '../core/errors.js'
 import type { Exec } from '../core/exec.js'
+import { beat, serveHostKey } from '../core/heartbeat.js'
 import { isPidKeyed, resolveHostKey, type RequestMeta } from '../core/hostKey.js'
 import { requireHost } from '../core/identity.js'
 import { log } from '../core/log.js'
+import { mailboxOf } from '../core/paths.js'
 import { step } from '../core/pipe.js'
 import type { Harness, HostRecord } from '../core/schemas.js'
 
@@ -53,24 +54,26 @@ export function agentPidFor(call: CallContext): number | null {
     return call.harness === 'codex' ? call.pid : null
 }
 
-// Purpose: record the pid that serves the caller now in its agent.json (F1: a resumed Codex thread
-// or a restarted server keeps the identity but runs under a new pid). Best effort: liveness is a
-// hint, so a failure is logged and never fails the tool call.
-export async function refreshCallerPid(call: CallContext, host: HostRecord): Promise<void> {
-    await refreshAgentPid(call.root, host.groupKey, host.uuid, agentPidFor(call)).catch((err) =>
-        log('warn', 'refreshCallerPid', 'could not refresh the liveness pid', {
-            error: toSummitError(err, 'refreshCallerPid', { hostKey: host.hostKey }).toJSON(),
+// Purpose: beat the caller's agent now and register its host key with this server's heartbeat timer
+// (SPEC §7): a Codex thread is served by whichever server sees its calls (a `codex resume` runs a new
+// server), and a pid-keyed agent is beaten from its first call even before the next tick. OpenCode is
+// skipped: its liveness is always "unknown". Best effort: a failure is logged and never fails the call.
+export async function beatCaller(call: CallContext, host: HostRecord): Promise<void> {
+    if (call.harness === 'opencode') return
+    serveHostKey(host.hostKey)
+    await beat(mailboxOf(call.root, host)).catch((err) =>
+        log('warn', 'beatCaller', 'could not write the heartbeat', {
+            error: toSummitError(err, 'beatCaller', { hostKey: host.hostKey }).toJSON(),
         }),
     )
 }
 
 // Purpose: step that loads the caller's identity or fails with SUMMIT_NOT_JOINED. The record is
-// checked for staleness and repaired after an unfinished group move (src/core/identity.ts); the
-// caller's liveness pid is refreshed (F1).
+// repaired after an unfinished group move (src/core/identity.ts); the caller's agent is beaten.
 export function requireHostStep<C extends WithHost>() {
     return step<C>('requireHost', async (ctx) => {
         const host = await requireHost(ctx.call.root, need(ctx.hostKey, 'hostKey'))
-        await refreshCallerPid(ctx.call, host)
+        await beatCaller(ctx.call, host)
         return { ...ctx, host }
     })
 }

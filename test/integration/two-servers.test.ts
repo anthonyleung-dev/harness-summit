@@ -6,15 +6,15 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { tmpDir } from '../helpers/env.js'
 import { McpProc } from '../helpers/mcp.js'
 
-describe('two claude-style servers (distinct ppids via sh -c)', () => {
+describe('two claude-style servers (distinct ppids via a Node parent)', () => {
     const root = tmpDir('two')
     const execLog = path.join(root, 'exec.log')
     let a: McpProc
     let b: McpProc
 
     beforeAll(async () => {
-        a = McpProc.start({ harness: 'claude', root, viaShell: true, env: { HARNESS_SUMMIT_EXEC_LOG: execLog } })
-        b = McpProc.start({ harness: 'claude', root, viaShell: true, env: { HARNESS_SUMMIT_EXEC_LOG: execLog } })
+        a = McpProc.start({ harness: 'claude', root, viaParent: true, env: { HARNESS_SUMMIT_EXEC_LOG: execLog } })
+        b = McpProc.start({ harness: 'claude', root, viaParent: true, env: { HARNESS_SUMMIT_EXEC_LOG: execLog } })
         await a.initialize()
         await b.initialize()
     })

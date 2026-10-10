@@ -17,7 +17,7 @@ import fs from 'node:fs/promises'
 
 import { requireAgent } from '../core/agents.js'
 import { summitError } from '../core/errors.js'
-import { pathExists } from '../core/fsx.js'
+import { pathExists, renameRetry } from '../core/fsx.js'
 import { writeHost } from '../core/identity.js'
 import { withLock } from '../core/lock.js'
 import { log } from '../core/log.js'
@@ -96,9 +96,10 @@ const claimNewName = step<GroupCtx>(
 // no sender's wake decision holds that lock while the folder moves (a lock held across the rename
 // would be left behind in the moved folder, held by a live process that no longer releases it). The
 // lock file moves with the folder and is released at its new path (withLock `releaseAt`, N4); a break
-// lock or tomb of a breaker at the old path that moved with it is removed there (E5).
+// lock or tomb of a breaker at the old path that moved with it is removed there (E5). Windows refuses to
+// rename a folder while another program holds a file in it open; renameRetry retries that for about 1 s.
 async function renameHoldingReadLock(from: string, to: string): Promise<void> {
-    await withLock(cursorLock(from), async () => await fs.rename(from, to), {
+    await withLock(cursorLock(from), async () => await renameRetry(from, to), {
         mkdir: false,
         releaseAt: () => cursorLock(to),
     })

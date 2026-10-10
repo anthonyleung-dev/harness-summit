@@ -5,7 +5,7 @@ import { log } from '../core/log.js'
 import { mailboxOf } from '../core/paths.js'
 import { pipe, step } from '../core/pipe.js'
 import type { AgentRecord } from '../core/schemas.js'
-import { hostKeyStep, need, refreshCallerPid, requireHostStep, type CallContext, type WithHost } from './context.js'
+import { beatCaller, hostKeyStep, need, requireHostStep, type CallContext, type WithHost } from './context.js'
 
 export type WhoamiResult =
     | { joined: false; hostKey: string }
@@ -36,12 +36,12 @@ interface WhoamiCtx extends WithHost {
     agent?: AgentRecord | null
 }
 
-// Step: load the identity without failing when there is none (stale records read as none); a joined
-// caller's liveness pid is refreshed like in every other tool (F1).
+// Step: load the identity without failing when there is none; a joined caller's agent is beaten like
+// in every other tool (SPEC §7).
 const loadIdentity = step<WhoamiCtx>('loadIdentity', async (ctx) => {
     const host = await loadHost(ctx.call.root, need(ctx.hostKey, 'hostKey'))
     if (host === null) return ctx
-    await refreshCallerPid(ctx.call, host)
+    await beatCaller(ctx.call, host)
     return { ...ctx, host }
 })
 
@@ -73,17 +73,19 @@ interface MembersCtx extends WithHost {
     members?: Member[]
 }
 
-// Step: list the group's agents with liveness (pid plus start time).
+// Step: list the group's agents with liveness (heartbeat age, SPEC §7).
 const collect = step<MembersCtx>('listAgents', async (ctx) => {
     const host = need(ctx.host, 'host')
     const agents = await listAgents(ctx.call.root, host.groupKey)
-    const members = agents.map((a) => ({
-        name: a.name,
-        uuid: a.uuid,
-        harness: a.harness,
-        alive: isAlive(a),
-        self: a.uuid === host.uuid,
-    }))
+    const members = await Promise.all(
+        agents.map(async (a) => ({
+            name: a.name,
+            uuid: a.uuid,
+            harness: a.harness,
+            alive: await isAlive(ctx.call.root, host.groupKey, a),
+            self: a.uuid === host.uuid,
+        })),
+    )
     return { ...ctx, members }
 })
 

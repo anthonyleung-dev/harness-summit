@@ -21,11 +21,6 @@ export const NameSchema = z
     .regex(NAME_PATTERN, 'name must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$')
     .refine((n) => !UUID_PATTERN.test(n), 'name must not be a uuid')
 
-// Start time of a process in clock ticks since boot (`/proc/<pid>/stat` field 22). Together with the
-// pid it names one process: a reused pid has a different start time. Optional for records written
-// before this field existed.
-export const ProcStartSchema = z.number().int().nonnegative().nullable().optional()
-
 export const WakeSchema = z.discriminatedUnion('type', [
     z.object({ type: z.literal('signal'), path: z.string().min(1) }),
     z.object({ type: z.literal('codex-queue'), threadId: z.string().min(1) }),
@@ -39,8 +34,6 @@ export const HostRecordSchema = z.object({
     harness: HarnessSchema,
     hostKey: z.string().min(1),
     joinedAt: z.string(),
-    // Start time of the host process for pid-keyed hosts (claude, pi, omp); null otherwise.
-    hostStart: ProcStartSchema,
 })
 export type HostRecord = z.infer<typeof HostRecordSchema>
 
@@ -56,9 +49,9 @@ export const AgentRecordSchema = z.object({
     cwd: z.string(),
     cwdSource: CwdSourceSchema,
     projectRoot: z.string(),
+    // The process that served the agent when it joined (informational; liveness comes from the heartbeat,
+    // src/core/heartbeat.ts). Kept because servers before the heartbeat require the field.
     pid: z.number().int().positive().nullable(),
-    // Start time of `pid`, so liveness survives pid reuse.
-    pidStart: ProcStartSchema,
     joinedAt: z.string(),
     wake: WakeSchema,
 })

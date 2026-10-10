@@ -10,7 +10,7 @@ import { join } from '../../src/flows/join.js'
 import { read } from '../../src/flows/read.js'
 import { rename } from '../../src/flows/rename.js'
 import { send } from '../../src/flows/send.js'
-import { callFor, livePid, recordingExec, sampleRecord, tmpRoot } from '../helpers/env.js'
+import { callFor, recordingExec, sampleRecord, tmpRoot } from '../helpers/env.js'
 
 describe('damaged inbox', () => {
     let root: string
@@ -20,9 +20,9 @@ describe('damaged inbox', () => {
 
     it('a torn append in one sender file: every send still works, the read returns the rest and reports the damage', async () => {
         const exec = recordingExec()
-        const r = callFor(root, 'claude', { ppid: livePid(), exec })
-        const a = callFor(root, 'claude', { ppid: livePid(), exec })
-        const b = callFor(root, 'claude', { ppid: livePid(), exec })
+        const r = callFor(root, 'claude', { exec })
+        const a = callFor(root, 'claude', { exec })
+        const b = callFor(root, 'claude', { exec })
         const jr = await join(r)
         await join(a)
         await join(b)
@@ -40,8 +40,8 @@ describe('damaged inbox', () => {
     })
 
     it('a foreign file in the folder is never parsed; a stray name-shaped .md file is skipped as corrupt', async () => {
-        const r = callFor(root, 'claude', { ppid: livePid() })
-        const a = callFor(root, 'claude', { ppid: livePid() })
+        const r = callFor(root, 'claude')
+        const a = callFor(root, 'claude')
         const jr = await join(r)
         await join(a)
         fs.writeFileSync(path.join(jr.folder, 'notes on the task.md'), 'not a record\n')
@@ -64,8 +64,8 @@ describe('cursor', () => {
 describe('parallel reads', () => {
     it('two summit_read calls of one agent at once never return a record twice', async () => {
         const root = tmpRoot()
-        const r = callFor(root, 'claude', { ppid: livePid() })
-        const a = callFor(root, 'claude', { ppid: livePid() })
+        const r = callFor(root, 'claude')
+        const a = callFor(root, 'claude')
         const jr = await join(r)
         await join(a)
         for (let round = 0; round < 10; round++) {

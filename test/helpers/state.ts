@@ -6,7 +6,7 @@ import path from 'node:path'
 import { vi } from 'vitest'
 
 import { formatLockOwner } from '../../src/core/lock.js'
-import { agentDir, groupDir, hostFile, membersFile } from '../../src/core/paths.js'
+import { agentDir, groupDir, heartbeatFile, hostFile, membersFile } from '../../src/core/paths.js'
 
 // Purpose: run `action` once, at the first read of a group's members.json: a parallel call that lands
 // while a flow reads the name map under its lock. Undo with vi.restoreAllMocks().
@@ -72,31 +72,38 @@ export function foldersOf(root: string, uuid: string): string[] {
     return fs.readdirSync(root).filter((g) => !g.startsWith('.') && fs.existsSync(agentDir(root, g, uuid)))
 }
 
-// How a test lock file names its owner: its start time (null writes `-`) and its age; `round2` writes
-// the older 3-field line `<token> <pid> <ISO time>` (no start time).
+// How a test lock file looks: its age (mtime moved into the past) and, with `legacy`, the owner line
+// of an older server (`round2`: `<token> <pid> <ISO time>`; `round3`: `<token> <pid> <start> <ISO time>`).
 export interface LockLineOptions {
-    start?: number | null
     ageMs?: number
-    round2?: boolean
+    legacy?: 'round2' | 'round3'
 }
 
-// Purpose: the owner line of a lock held by another holder (formatLockOwner, the one format), or the
-// round-2 line.
-export function lockLine(token: string, pid: number, opts: LockLineOptions = {}): string {
+// Purpose: the owner line of a lock held by another holder (formatLockOwner, the one format), or an older
+// server's line.
+export function lockLine(token: string, opts: LockLineOptions = {}): string {
     const at = new Date('2026-10-10T00:00:00.000Z')
-    return opts.round2 === true
-        ? `${token} ${pid} ${at.toISOString()}\n`
-        : formatLockOwner(token, pid, opts.start ?? null, at)
+    if (opts.legacy === 'round2') return `${token} 4242 ${at.toISOString()}\n`
+    if (opts.legacy === 'round3') return `${token} 4242 9001 ${at.toISOString()}\n`
+    return formatLockOwner(token, at)
 }
 
 // Purpose: write a lock file left by another holder (lockLine), its mtime moved `opts.ageMs` into the
-// past (an old lock). Returns the content.
-export function writeLockFile(file: string, token: string, pid: number, opts: LockLineOptions = {}): string {
-    const content = lockLine(token, pid, opts)
+// past (a lock nobody refreshed for that long). Returns the content.
+export function writeLockFile(file: string, token: string, opts: LockLineOptions = {}): string {
+    const content = lockLine(token, opts)
     fs.mkdirSync(path.dirname(file), { recursive: true })
     fs.writeFileSync(file, content)
     if ((opts.ageMs ?? 0) > 0) ageFile(file, opts.ageMs ?? 0)
     return content
+}
+
+// Purpose: make the heartbeat of the agent folder `folder` `ageMs` old (its server stopped beating that
+// long ago: the host process is gone). Creates the heartbeat file when it is missing.
+export function ageHeartbeat(folder: string, ageMs: number): void {
+    const file = heartbeatFile(folder)
+    if (!fs.existsSync(file)) fs.writeFileSync(file, '')
+    ageFile(file, ageMs)
 }
 
 // Purpose: move the mtime of `file` `ageMs` into the past.

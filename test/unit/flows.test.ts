@@ -4,6 +4,7 @@ import path from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { SUMMIT_GUIDANCE } from '../../src/core/notice.js'
+import { heartbeatFile } from '../../src/core/paths.js'
 import { bye } from '../../src/flows/bye.js'
 import { group } from '../../src/flows/group.js'
 import { join } from '../../src/flows/join.js'
@@ -13,7 +14,7 @@ import { rename } from '../../src/flows/rename.js'
 import { send } from '../../src/flows/send.js'
 import { runTool } from '../../src/server/server.js'
 import { ReadOutput, TOOLS } from '../../src/server/tools.js'
-import { callFor, codexMeta, errorCode as code, livePid, opencodeMeta, recordingExec, tmpRoot } from '../helpers/env.js'
+import { callFor, codexMeta, errorCode as code, fakePid, opencodeMeta, recordingExec, tmpRoot } from '../helpers/env.js'
 import { agentJson, hostJson } from '../helpers/state.js'
 
 describe('flows', () => {
@@ -23,7 +24,7 @@ describe('flows', () => {
     })
 
     it('join is idempotent per host key, records the SPEC §4 agent.json and returns the guidance', async () => {
-        const pid = livePid()
+        const pid = fakePid()
         const call = callFor(root, 'pi', { ppid: pid })
         const first = await join(call)
         const again = await join(call)
@@ -34,17 +35,18 @@ describe('flows', () => {
         expect(agent).toMatchObject({
             harness: 'pi',
             pid,
-            pidStart: expect.any(Number),
             cwdSource: 'process.cwd',
             wake: { type: 'signal', path: path.join(root, '.wake', `pi-${pid}.signal`) },
         })
         const host = hostJson(root, `pi-${pid}`)!
-        expect(Object.keys(host).sort()).toEqual(['groupKey', 'harness', 'hostKey', 'hostStart', 'joinedAt', 'uuid'])
-        expect(host.hostStart).toBe(agent.pidStart)
+        expect(Object.keys(host).sort()).toEqual(['groupKey', 'harness', 'hostKey', 'joinedAt', 'uuid'])
+        expect(agent).not.toHaveProperty('pidStart')
+        // The first heartbeat lands with the join (SPEC §7).
+        expect(fs.existsSync(heartbeatFile(first.folder))).toBe(true)
     })
 
     it('reads identity from disk on every call: deleting the host file un-joins', async () => {
-        const call = callFor(root, 'claude', { ppid: livePid() })
+        const call = callFor(root, 'claude')
         await join(call)
         fs.rmSync(path.join(root, '.hosts', `${call.harness}-${call.ppid}.json`))
         expect(await whoami(call)).toEqual({ joined: false, hostKey: `claude-${call.ppid}` })
@@ -52,14 +54,12 @@ describe('flows', () => {
     })
 
     it('send errors: unknown target, gone target, self send, not joined', async () => {
-        const a = callFor(root, 'claude', { ppid: livePid() })
-        const b = callFor(root, 'claude', { ppid: livePid() })
+        const a = callFor(root, 'claude')
+        const b = callFor(root, 'claude')
         const ja = await join(a)
         const jb = await join(b)
         await rename(b, 'bob')
-        expect(await code(send(callFor(root, 'claude', { ppid: livePid() }), { to: 'bob', message: 'x' }))).toBe(
-            'SUMMIT_NOT_JOINED',
-        )
+        expect(await code(send(callFor(root, 'claude'), { to: 'bob', message: 'x' }))).toBe('SUMMIT_NOT_JOINED')
         expect(await code(send(a, { to: '@nobody', message: 'x' }))).toBe('SUMMIT_UNKNOWN_TARGET')
         expect(await code(send(a, { to: '99999999-9999-4999-8999-999999999999', message: 'x' }))).toBe(
             'SUMMIT_UNKNOWN_TARGET',
@@ -72,8 +72,8 @@ describe('flows', () => {
     })
 
     it('rename: a live holder keeps its name; a holder whose folder is gone frees it; bad names fail', async () => {
-        const a = callFor(root, 'claude', { ppid: livePid() })
-        const b = callFor(root, 'claude', { ppid: livePid() })
+        const a = callFor(root, 'claude')
+        const b = callFor(root, 'claude')
         await join(a)
         const jb = await join(b)
         await rename(b, 'bob')
@@ -103,8 +103,8 @@ describe('flows', () => {
     })
 
     it('a reply carries no reply hint, and the read output schema refuses one (D1)', async () => {
-        const a = callFor(root, 'claude', { ppid: livePid() })
-        const b = callFor(root, 'claude', { ppid: livePid() })
+        const a = callFor(root, 'claude')
+        const b = callFor(root, 'claude')
         const ja = await join(a)
         const jb = await join(b)
         const ask = await send(a, { to: jb.uuid, message: 'please do X' })
@@ -120,9 +120,9 @@ describe('flows', () => {
     })
 
     it('group move keeps the inbox and refuses a name held by a live agent before moving', async () => {
-        const a = callFor(root, 'claude', { ppid: livePid() })
-        const b = callFor(root, 'claude', { ppid: livePid() })
-        const c = callFor(root, 'claude', { ppid: livePid() })
+        const a = callFor(root, 'claude')
+        const b = callFor(root, 'claude')
+        const c = callFor(root, 'claude')
         const ja = await join(a)
         const jb = await join(b)
         await join(c)
@@ -139,8 +139,8 @@ describe('flows', () => {
         expect(await code(group(b, 'Not_Valid'))).toBe('SUMMIT_BAD_GROUP')
     })
 
-    it('members reports alive=unknown for opencode, true for a live pid, and self for the caller only', async () => {
-        const a = callFor(root, 'claude', { ppid: process.pid })
+    it('members reports alive=unknown for opencode, true for a fresh heartbeat, and self for the caller only', async () => {
+        const a = callFor(root, 'claude')
         const o = callFor(root, 'opencode', { meta: opencodeMeta('ses_z') })
         await join(a)
         await join(o)
@@ -153,7 +153,7 @@ describe('flows', () => {
 
     it('runTool turns errors into isError results with the structured error and validates input', async () => {
         const sendTool = TOOLS.find((t) => t.name === 'summit_send')!
-        const call = callFor(root, 'claude', { ppid: livePid(), exec: recordingExec() })
+        const call = callFor(root, 'claude', { exec: recordingExec() })
         const res = await runTool(sendTool as never, call, { to: 'x', message: 'y' })
         expect(res.isError).toBe(true)
         expect(JSON.parse((res.content[0] as { text: string }).text).error).toMatchObject({

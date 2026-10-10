@@ -3,10 +3,10 @@ import fs from 'node:fs/promises'
 
 import { hasErrno, summitError } from './errors.js'
 import { pathExists, readJsonFile, writeJsonAtomic } from './fsx.js'
+import { isBeatFresh } from './heartbeat.js'
 import { log } from './log.js'
 import { lockGroup } from './members.js'
 import { agentDir, agentFile, groupDir } from './paths.js'
-import { isProcessAlive, readProcessStart } from './proc.js'
 import { AgentRecordSchema, UUID_PATTERN, type AgentRecord } from './schemas.js'
 
 export type Alive = boolean | 'unknown'
@@ -98,19 +98,17 @@ export async function listAgents(root: string, groupKey: string): Promise<AgentR
     return agents
 }
 
-// Purpose: liveness of an agent from agent.json (SPEC §7): null pid → "unknown"; a pid that is gone, or
-// that now belongs to another process (pid reuse), → false; any other probe error → "unknown" (F9). A
-// Codex agent whose recorded server pid is gone reads "unknown", not false (D5): Codex is keyed by its
-// thread, and a `codex resume` serves the same thread from a new server that refreshes the pid only on
-// its first tool call. Only a definite false lets another agent take a name over without `force`.
-export function isAlive(agent: Pick<AgentRecord, 'harness' | 'pid' | 'pidStart'>): Alive {
-    if (agent.pid === null) return 'unknown'
-    const alive = isProcessAlive(agent.pid, agent.pidStart)
-    if (alive === false && agent.harness === 'codex') {
-        log('debug', 'isAlive', 'codex server pid gone; the thread may be resumed', { pid: agent.pid })
-        return 'unknown'
-    }
-    return alive
+// Purpose: liveness of an agent (SPEC §7): "unknown" for OpenCode (one shared server outlives every
+// session, so nothing beats for one session); else true while the heartbeat in its folder is younger
+// than HEARTBEAT_STALE_MS, false when it is older or missing (src/core/heartbeat.ts). Only a definite
+// false lets another agent take a name over without `force`.
+export async function isAlive(
+    root: string,
+    groupKey: string,
+    agent: Pick<AgentRecord, 'harness' | 'uuid'>,
+): Promise<Alive> {
+    if (agent.harness === 'opencode') return 'unknown'
+    return await isBeatFresh(agentDir(root, groupKey, agent.uuid))
 }
 
 // A change to one agent.json: the fields to set, or a function of the current record that returns
@@ -143,27 +141,4 @@ export async function updateAgent(
         return next
     }
     return opts.lockHeld === true ? await apply() : await lockGroup(root, groupKey, apply, { mkdir: false })
-}
-
-// Purpose: keep agent.json's liveness pid current (F1). A Codex agent is keyed by its thread, so a
-// resumed thread or a restarted MCP server serves the same agent from a new pid; every tool call
-// records the pid that serves it now (updateAgent, under the group lock). Writes only when the pid or
-// its start time changed, and only with a definite start time (an unreadable /proc never overwrites a
-// good one). Never creates the folder.
-export async function refreshAgentPid(root: string, groupKey: string, uuid: string, pid: number | null): Promise<void> {
-    const start = pid === null ? null : readProcessStart(pid)
-    if (typeof start === 'string') {
-        // 'unknown' or 'gone': no definite start time to record, so leave the file as it is (F9).
-        log('warn', 'refreshAgentPid', 'start time not readable; refresh skipped', { groupKey, uuid, pid, start })
-        return
-    }
-    const pidStart = start
-    const current = (a: AgentRecord | null) => a === null || (a.pid === pid && (a.pidStart ?? null) === pidStart)
-    // Cheap check first: almost every call finds the pid unchanged and takes no lock.
-    if (current(await readAgent(root, groupKey, uuid))) return
-    await updateAgent(root, groupKey, uuid, (agent) => {
-        if (current(agent)) return null
-        log('info', 'refreshAgentPid', 'liveness pid refreshed', { groupKey, uuid, from: agent.pid, to: pid })
-        return { pid, pidStart }
-    })
 }

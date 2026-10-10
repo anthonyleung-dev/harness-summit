@@ -96,10 +96,10 @@ describe('claude hooks', () => {
         const r = await runCli(['hook', 'claude-session-start'], {
             env: { HARNESS_SUMMIT_HOME: root, CLAUDE_PID: '' },
             stdin: sessionStartInput('startup'),
-            viaShell: true,
+            viaParent: true,
         })
         expect(JSON.parse(r.stdout).hookSpecificOutput.watchPaths).toEqual([
-            path.join(root, '.wake', `claude-${r.shellPid}.signal`),
+            path.join(root, '.wake', `claude-${r.parentPid}.signal`),
         ])
     })
 

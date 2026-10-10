@@ -16,7 +16,7 @@ import { readMembers, updateMembers } from '../../src/core/members.js'
 import { membersLock } from '../../src/core/paths.js'
 import { defaultGroupKey, namedGroupKey } from '../../src/core/project.js'
 import { HARNESSES } from '../../src/core/schemas.js'
-import { codexMeta, deadPid, opencodeMeta, tmpDir } from '../helpers/env.js'
+import { codexMeta, opencodeMeta, tmpDir } from '../helpers/env.js'
 import { ageFile, lockLine, writeLockFile } from '../helpers/state.js'
 
 describe('host keys', () => {
@@ -87,10 +87,10 @@ describe('locks', () => {
 
     it('a waiter that saw a stale lock never moves the fresh lock that replaced it (F10, D3)', async () => {
         const lock = path.join(tmpDir('tomb'), 'x.lock')
-        const dead = await deadPid()
-        const stale = lockLine('stale-token', dead)
-        // The waiter read "stale-token" earlier; another waiter broke that lock and took a fresh one.
-        const fresh = writeLockFile(lock, 'fresh-token', dead)
+        const stale = lockLine('stale-token')
+        // The waiter read "stale-token" earlier; another waiter broke that lock and took a new one, which
+        // its holder has since stopped refreshing too.
+        const fresh = writeLockFile(lock, 'fresh-token', { ageMs: LOCK_STALE_MS + 1_000 })
         expect(await breakStaleLock(lock, stale)).toBe(false)
         expect(fs.readFileSync(lock, 'utf8')).toBe(fresh)
         expect(fs.readdirSync(path.dirname(lock))).toEqual(['x.lock'])
@@ -101,7 +101,7 @@ describe('locks', () => {
 
     it('many waiters on one stale lock: exactly one holder at a time (F10)', async () => {
         const lock = path.join(tmpDir('herd'), 'x.lock')
-        writeLockFile(lock, 'dead-token', await deadPid())
+        writeLockFile(lock, 'dead-token', { ageMs: LOCK_STALE_MS + 1_000 })
         let holders = 0
         let most = 0
         await Promise.all(
@@ -121,9 +121,9 @@ describe('locks', () => {
         const lock = path.join(tmpDir('token'), 'x.lock')
         await withLock(lock, async () => {
             // Someone broke our lock and took it: the file now holds their token.
-            writeLockFile(lock, 'their-token', 1)
+            writeLockFile(lock, 'their-token')
         })
-        expect(fs.readFileSync(lock, 'utf8')).toBe(lockLine('their-token', 1))
+        expect(fs.readFileSync(lock, 'utf8')).toBe(lockLine('their-token'))
     })
 
     it('a lock inside a missing folder is an error, never a new folder (mkdir: false)', async () => {

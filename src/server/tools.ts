@@ -30,12 +30,11 @@ const Empty = z.object({})
 const Alive = z.union([z.boolean(), z.literal('unknown')])
 // The `force` input of summit_rename and summit_group (one rule, F8): take a name over from a holder
 // whose liveness is unknown.
-const FORCE_RULE =
-    'force takes over a name whose holder has unknown liveness (OpenCode, or Codex with its server gone).'
+const FORCE_RULE = 'force takes over a name whose holder has unknown liveness (OpenCode).'
 const Force = z.boolean().optional().describe('Take over the name even when its holder may be alive')
 // A takeover in a summit_rename or summit_group result, with its reason (O1).
 const TakeoverOutput = TakeoverSchema.nullable().describe(
-    'The name was taken over: from = the old holder, reason = holder-gone (its process is gone) or ' +
+    'The name was taken over: from = the old holder, reason = holder-gone (no server kept it alive) or ' +
         'forced-unknown (liveness unknown, force given). null when the name was free',
 )
 

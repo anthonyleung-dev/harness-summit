@@ -3,9 +3,11 @@
 // nobody outside the lock ever sees a claim without its folder. A rename in the old group never leaves
 // agent.json and the new map with different names (DELTA-REVIEW-4, pre-existing race).
 import fs from 'node:fs'
+import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { HEARTBEAT_STALE_MS } from '../../src/core/heartbeat.js'
 import { readHost } from '../../src/core/identity.js'
 import { LOCK_STALE_MS, sleep, withLock } from '../../src/core/lock.js'
 import { agentDir, cursorLock, hostsDir, membersLock } from '../../src/core/paths.js'
@@ -15,8 +17,17 @@ import { members, whoami } from '../../src/flows/query.js'
 import { read } from '../../src/flows/read.js'
 import { rename } from '../../src/flows/rename.js'
 import { send } from '../../src/flows/send.js'
-import { callFor, errorCode, killLivePid, livePid, tmpRoot, until } from '../helpers/env.js'
-import { ageFile, agentJson, foldersOf, mapOf, onMapRead, patchAgentJson, writeMap } from '../helpers/state.js'
+import { callFor, errno, errorCode, tmpRoot, until } from '../helpers/env.js'
+import {
+    ageFile,
+    ageHeartbeat,
+    agentJson,
+    foldersOf,
+    mapOf,
+    onMapRead,
+    patchAgentJson,
+    writeMap,
+} from '../helpers/state.js'
 
 // Purpose: check `bad` between every I/O step of `run` (setImmediate runs once per event-loop turn);
 // returns the result of `run` and every state `bad` reported.
@@ -43,7 +54,6 @@ describe('group move under the group lock', () => {
     })
     afterEach(() => {
         vi.restoreAllMocks()
-        if (fs.existsSync(hostsDir(root))) fs.chmodSync(hostsDir(root), 0o755)
     })
 
     // Purpose: the name agent.json holds after a move to `groupKey`, checked against the new map, the
@@ -62,7 +72,7 @@ describe('group move under the group lock', () => {
     }
 
     it('a rename that lands while the move claims the name waits for the move, then finds the folder gone', async () => {
-        const a = callFor(root, 'claude', { ppid: livePid() })
+        const a = callFor(root, 'claude')
         const ja = await join(a)
         await rename(a, 'a')
         let renaming: Promise<string | undefined> | undefined
@@ -79,8 +89,8 @@ describe('group move under the group lock', () => {
     })
 
     it('two moves in opposite directions both finish: both groups are locked in key order', async () => {
-        const a = callFor(root, 'claude', { ppid: livePid() })
-        const b = callFor(root, 'claude', { ppid: livePid() })
+        const a = callFor(root, 'claude')
+        const b = callFor(root, 'claude')
         const [ja, jb] = [await join(a), await join(b)]
         await group(a, 'ga')
         await group(b, 'gb')
@@ -91,7 +101,7 @@ describe('group move under the group lock', () => {
     })
 
     it('a rename that ends after the move read the name, before its locks, is the name the move claims', async () => {
-        const a = callFor(root, 'claude', { ppid: livePid() })
+        const a = callFor(root, 'claude')
         const ja = await join(a)
         await rename(a, 'a')
         let moving: Promise<{ name: string | null }> | undefined
@@ -106,8 +116,8 @@ describe('group move under the group lock', () => {
     })
 
     it('a leftover entry in the old map does not block the name there, and the claim drops it (F6)', async () => {
-        const a = callFor(root, 'claude', { ppid: livePid() })
-        const b = callFor(root, 'claude', { ppid: livePid() })
+        const a = callFor(root, 'claude')
+        const b = callFor(root, 'claude')
         const ja = await join(a)
         await rename(a, 'al')
         await join(b)
@@ -119,8 +129,8 @@ describe('group move under the group lock', () => {
     })
 
     it('a crash after the claim (map names the mover, folder never moved) frees the name (F6)', async () => {
-        const a = callFor(root, 'claude', { ppid: livePid() })
-        const c = callFor(root, 'claude', { ppid: livePid() })
+        const a = callFor(root, 'claude')
+        const c = callFor(root, 'claude')
         const ja = await join(a)
         await rename(a, 'al')
         writeMap(root, 'gx', { al: ja.uuid, ghost: '99999999-9999-4999-8999-999999999999' })
@@ -131,15 +141,14 @@ describe('group move under the group lock', () => {
     })
 
     it('a failed move gives a taken-over name and map entry back to the holder (F7)', async () => {
-        const holderPid = livePid()
-        const h = callFor(root, 'claude', { ppid: holderPid })
+        const h = callFor(root, 'claude')
         const jh = await join(h)
         await group(h, 'g9')
         await rename(h, 'bob')
-        const b = callFor(root, 'claude', { ppid: livePid() })
+        const b = callFor(root, 'claude')
         const jb = await join(b)
         await rename(b, 'bob')
-        await killLivePid(holderPid)
+        ageHeartbeat(agentDir(root, 'g9', jh.uuid), HEARTBEAT_STALE_MS + 5_000)
         fs.mkdirSync(path.join(agentDir(root, 'g9', jb.uuid), 'x'), { recursive: true }) // moveFolder refuses
         expect(await errorCode(group(b, 'g9'))).toBe('SUMMIT_IO')
         expect(mapOf(root, 'g9')).toEqual({ bob: jh.uuid })
@@ -148,15 +157,20 @@ describe('group move under the group lock', () => {
     })
 
     it('a failure after the folder moved (host record write) moves it back and drops the claim', async () => {
-        const a = callFor(root, 'claude', { ppid: livePid() })
-        const s = callFor(root, 'claude', { ppid: livePid() })
+        const a = callFor(root, 'claude')
+        const s = callFor(root, 'claude')
         const ja = await join(a)
         await join(s)
         await rename(a, 'mover')
         await send(s, { to: '@mover', message: 'kept' })
-        fs.chmodSync(hostsDir(root), 0o555) // updateHost cannot write
+        // updateHost cannot write (a spy, not chmod: Windows cannot make a directory read-only).
+        const realRename = fsp.rename
+        vi.spyOn(fsp, 'rename').mockImplementation(async (from, to) => {
+            if (String(to).startsWith(hostsDir(root))) throw errno('EIO')
+            return await realRename(from, to)
+        })
         expect(await errorCode(group(a, 'g6'))).toBe('SUMMIT_IO')
-        fs.chmodSync(hostsDir(root), 0o755)
+        vi.restoreAllMocks()
         expect(foldersOf(root, ja.uuid)).toEqual([ja.groupKey])
         expect(mapOf(root, 'g6')).toEqual({})
         expect(mapOf(root, ja.groupKey)).toEqual({ mover: ja.uuid })
@@ -165,7 +179,7 @@ describe('group move under the group lock', () => {
     })
 
     it('outside the lock, the new map never names the mover while its folder is elsewhere', async () => {
-        const a = callFor(root, 'claude', { ppid: livePid() })
+        const a = callFor(root, 'claude')
         const ja = await join(a)
         await rename(a, 'walker')
         const { seen } = await watch(group(a, 'g7'), () =>
@@ -180,8 +194,8 @@ describe('group move under the group lock', () => {
     })
 
     it('a refused claim never moves the folder, not even for a moment', async () => {
-        const a = callFor(root, 'claude', { ppid: livePid() })
-        const b = callFor(root, 'claude', { ppid: livePid() })
+        const a = callFor(root, 'claude')
+        const b = callFor(root, 'claude')
         const ja = await join(a)
         await join(b)
         await group(b, 'g8')
@@ -196,8 +210,8 @@ describe('group move under the group lock', () => {
     })
 
     it('a move that waits for a read keeps the group lock however long it waits; its name stays its own (D4)', async () => {
-        const a = callFor(root, 'claude', { ppid: livePid() })
-        const b = callFor(root, 'claude', { ppid: livePid() })
+        const a = callFor(root, 'claude')
+        const b = callFor(root, 'claude')
         const ja = await join(a)
         const jb = await join(b)
         await rename(a, 'x')
@@ -209,8 +223,10 @@ describe('group move under the group lock', () => {
             async () => {
                 moving = group(a, 'g2')
                 await until(() => fs.existsSync(membersLock(root, 'g2')))
-                // The move has held the lock for a minute: age alone never makes it stale.
+                // As if the move had held the lock for a minute: its lease refresh makes it fresh again,
+                // so a waiter never breaks it.
                 ageFile(membersLock(root, 'g2'), LOCK_STALE_MS * 6)
+                await until(() => Date.now() - fs.statSync(membersLock(root, 'g2')).mtimeMs < LOCK_STALE_MS, 6_000)
                 renaming = errorCode(rename(b, 'x'))
                 await sleep(300)
                 expect(agentJson(agentDir(root, 'g2', jb.uuid)).name).toBeNull()
@@ -224,7 +240,7 @@ describe('group move under the group lock', () => {
     })
 
     it('a move waits for a read in progress; the read lock never stays behind in the moved folder', async () => {
-        const a = callFor(root, 'claude', { ppid: livePid() })
+        const a = callFor(root, 'claude')
         const ja = await join(a)
         let moving: Promise<unknown> | undefined
         await withLock(

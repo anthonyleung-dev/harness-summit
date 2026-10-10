@@ -1,6 +1,6 @@
 // Group name map `members.json` and its lock `members.lock` (SPEC §4, §5). Every write holds the lock
-// (src/core/lock.ts: O_EXCL create, owner line, stale when its owner process is gone, or by age when the
-// owner cannot be identified).
+// (src/core/lock.ts: O_EXCL create, owner line, a lease its holder refreshes; stale when nobody refreshed
+// it for LOCK_STALE_MS).
 import { readJsonFile, writeJsonAtomic } from './fsx.js'
 import { withLock, type LockOptions } from './lock.js'
 import { log } from './log.js'

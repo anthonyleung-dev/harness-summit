@@ -51,11 +51,35 @@ export async function writeJsonAtomic(file: string, data: unknown, opts: { mkdir
     try {
         if (opts.mkdir !== false) await fs.mkdir(path.dirname(file), { recursive: true })
         await fs.writeFile(tmp, jsonText(data))
-        await fs.rename(tmp, file)
+        await renameRetry(tmp, file)
     } catch (err) {
         await fs.rm(tmp, { force: true }).catch(() => undefined)
         log('warn', 'writeJsonAtomic', 'write failed', { file, error: String(err) })
         throw summitError('SUMMIT_IO', `cannot write ${file}`, 'writeJsonAtomic', { file }, err)
+    }
+}
+
+// Errno codes of a rename that another program blocks for a moment on Windows (an antivirus, an
+// indexer or an editor holds the file open). Linux and macOS do not raise them for a busy file; there
+// they mean a real refusal, and the retry only delays the same error by about one second.
+const RENAME_BUSY = ['EPERM', 'EBUSY', 'EACCES']
+// Backoff of renameRetry: 6 tries, about 1 s in total.
+const RENAME_DELAYS_MS = [20, 50, 100, 200, 300, 400]
+
+// Purpose: the one rename door (XPLAT-AUDIT D5, D6, D7): rename `from` to `to`, and retry with backoff
+// while the error is EPERM, EBUSY or EACCES. A rename that still fails after the retries throws the last
+// error; it never counts as done. Any other error (ENOENT, EXDEV, ...) throws at once.
+export async function renameRetry(from: string, to: string): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+        try {
+            await fs.rename(from, to)
+            return
+        } catch (err) {
+            const delay = RENAME_DELAYS_MS[attempt]
+            if (delay === undefined || !RENAME_BUSY.some((c) => hasErrno(err, c))) throw err
+            log('warn', 'renameRetry', 'rename blocked; retrying', { from, to, attempt, error: String(err) })
+            await new Promise((r) => setTimeout(r, delay))
+        }
     }
 }
 

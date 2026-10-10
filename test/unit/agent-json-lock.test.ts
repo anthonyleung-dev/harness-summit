@@ -1,5 +1,5 @@
-// Unit tests: every writer of an agent.json goes through updateAgent (N3: join, the pid refresh of F1,
-// the rename claim, the takeover, the restore on undo). It holds the group lock and keeps a field that
+// Unit tests: every writer of an agent.json goes through updateAgent (N3: join, the rename claim, the
+// takeover, the restore on undo); a tool call's heartbeat never writes agent.json. It holds the group lock and keeps a field that
 // another writer changed under that lock while it waited, instead of writing back what it loaded before.
 import fs from 'node:fs'
 import path from 'node:path'
@@ -12,7 +12,7 @@ import { join } from '../../src/flows/join.js'
 import { read } from '../../src/flows/read.js'
 import { rename } from '../../src/flows/rename.js'
 import { resumedCodex } from '../helpers/agents.js'
-import { callFor, livePid, tmpRoot } from '../helpers/env.js'
+import { callFor, tmpRoot } from '../helpers/env.js'
 import { agentJson, patchAgentJson } from '../helpers/state.js'
 
 describe('agent.json writes under the group lock', () => {
@@ -38,10 +38,11 @@ describe('agent.json writes under the group lock', () => {
         await running
     }
 
-    it('the pid refresh keeps a name cleared while it waited for the lock (F1)', async () => {
+    it('a tool call beats without writing agent.json, so a name cleared meanwhile stays cleared', async () => {
         const { joined: j, resumed } = await resumedCodex(root, 'cx')
+        const before = agentJson(j.folder)
         await takeoverWhileWaiting(j.groupKey, j.folder, () => read(resumed))
-        expect(agentJson(j.folder)).toMatchObject({ pid: resumed.pid, name: null })
+        expect(agentJson(j.folder)).toEqual({ ...before, name: null })
     })
 
     it('a repeated join keeps a name cleared while it waited for the lock', async () => {
@@ -51,14 +52,14 @@ describe('agent.json writes under the group lock', () => {
     })
 
     it('a rename keeps a field another writer changed while it waited for the lock (N3)', async () => {
-        const b = callFor(root, 'claude', { ppid: livePid() })
+        const b = callFor(root, 'claude')
         const jb = await join(b)
         await takeoverWhileWaiting(jb.groupKey, jb.folder, () => rename(b, 'nb'), { cwd: '/elsewhere' })
         expect(agentJson(jb.folder)).toMatchObject({ name: 'nb', cwd: '/elsewhere' })
     })
 
     it('updateAgent writes nothing for a null patch and never creates a missing folder (N3)', async () => {
-        const b = callFor(root, 'claude', { ppid: livePid() })
+        const b = callFor(root, 'claude')
         const jb = await join(b)
         const before = fs.readFileSync(path.join(jb.folder, 'agent.json'), 'utf8')
         expect(await updateAgent(root, jb.groupKey, jb.uuid, () => null)).toMatchObject({ uuid: jb.uuid })

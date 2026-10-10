@@ -1,14 +1,13 @@
-// Shared test helpers: temp dirs, an in-process CallContext, a recording Exec stub, live pids.
-import { spawn, type ChildProcess } from 'node:child_process'
+// Shared test helpers: temp dirs, an in-process CallContext, a recording Exec stub, fake host pids, fake
+// CLIs and a Node parent process. Portable: no shell, no POSIX-only program, no procfs read (XPLAT-AUDIT B6).
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { vi } from 'vitest'
 
 import type { CaptureResult, Exec, ExecRequest } from '../../src/core/exec.js'
 import type { RequestMeta } from '../../src/core/hostKey.js'
 import { sleep } from '../../src/core/lock.js'
-import { parseStat } from '../../src/core/proc.js'
 import type { Harness } from '../../src/core/schemas.js'
 import type { CallContext } from '../../src/flows/context.js'
 
@@ -50,36 +49,13 @@ export function recordingExec(
     }
 }
 
-const sleepers: ChildProcess[] = []
-process.once('exit', () => sleepers.forEach((c) => c.kill('SIGKILL')))
+// Host pids of in-process callers. Liveness comes from heartbeats, not from processes (SPEC §7), so a
+// host pid only has to be distinct: no process runs behind it.
+let nextFakePid = 4_100_000
 
-// Purpose: the pid of a fresh live process (a `sleep`), killed when the test process exits. Agents
-// need live, distinct host pids for liveness rules (name takeover, stale host records).
-export function livePid(): number {
-    const child = spawn('sleep', ['600'], { stdio: 'ignore' })
-    sleepers.push(child)
-    if (child.pid === undefined) throw new Error('cannot start sleep')
-    return child.pid
-}
-
-// Purpose: kill a process started by livePid() and wait until it is reaped (no zombie left).
-export async function killLivePid(pid: number): Promise<void> {
-    const child = sleepers.find((c) => c.pid === pid)
-    if (child === undefined) throw new Error(`pid ${pid} was not started by livePid()`)
-    const exited = new Promise((r) => child.once('exit', r))
-    child.kill('SIGKILL')
-    await exited
-}
-
-// Purpose: the pid of a zombie (exited, never reaped): `sh` starts `sleep 0` in the background and
-// becomes `sleep 600`, which never waits for it. Resolves once /proc shows state Z. The parent is
-// killed when the test process exits, and init reaps the zombie then.
-export async function zombiePid(): Promise<number> {
-    const parent = spawn('sh', ['-c', 'sleep 0 & echo $!; exec sleep 600'], { stdio: ['ignore', 'pipe', 'ignore'] })
-    sleepers.push(parent)
-    const pid = Number(await new Promise<string>((r) => parent.stdout?.once('data', (d) => r(String(d).trim()))))
-    await until(() => parseStat(fs.readFileSync(`/proc/${pid}/stat`, 'utf8'))?.state === 'Z')
-    return pid
+// Purpose: a fresh, distinct host pid for one simulated caller.
+export function fakePid(): number {
+    return nextFakePid++
 }
 
 // Purpose: an fs error with an errno code, as Node throws it.
@@ -87,37 +63,27 @@ export function errno(code: string): Error {
     return Object.assign(new Error(code), { code })
 }
 
-// Purpose: make the /proc reads under `prefix` fail with `code` (other files read normally). Every
-// /proc read failing with ENOENT is a process without /proc (DELTA-REVIEW-3 E2). Undo with
-// vi.restoreAllMocks().
-export function failProcReads(code: string, prefix = '/proc/'): void {
-    const real = fs.readFileSync
-    vi.spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, ...rest: never[]) => {
-        if (String(file).startsWith(prefix)) throw errno(code)
-        return (real as (...a: unknown[]) => unknown)(file, ...rest)
-    }) as typeof fs.readFileSync)
-}
-
-// Purpose: a pid that named a process that has exited and been reaped (a dead host).
-export async function deadPid(): Promise<number> {
-    const child = spawn('true', [], { stdio: 'ignore' })
-    const pid = child.pid
-    if (pid === undefined) throw new Error('cannot start true')
-    await new Promise((r) => child.once('exit', r))
-    return pid
-}
-
-// Purpose: an executable shell script `name` in `dir` with `body` (a fake harness CLI); returns its path.
-export function fakeBin(dir: string, name: string, body = 'exit 0'): string {
-    const bin = path.join(dir, name)
-    fs.writeFileSync(bin, `#!/bin/sh\n${body}\n`, { mode: 0o755 })
+// Purpose: a fake harness CLI `name` in `dir` that runs the JavaScript `body` under this node binary, and
+// return the path to start it by. POSIX: an executable file with an absolute node shebang. Windows: a
+// `.js` file plus a `name.cmd` shim of the npm shape (`"<node>" "<script>" %*`), so the spawn door's
+// cmd.exe path runs for real. `body` sees the arguments in process.argv.slice(2).
+export function fakeBin(dir: string, name: string, body = 'process.exit(0)'): string {
+    if (process.platform !== 'win32') {
+        const bin = path.join(dir, name)
+        fs.writeFileSync(bin, `#!${process.execPath}\n${body}\n`, { mode: 0o755 })
+        return bin
+    }
+    const script = path.join(dir, `${name}.js`)
+    fs.writeFileSync(script, `${body}\n`)
+    const bin = path.join(dir, `${name}.cmd`)
+    fs.writeFileSync(bin, `@"${process.execPath}" "${script}" %*\r\n`)
     return bin
 }
 
-// Purpose: wait until `cond` holds, polling every 50 ms (timeout throws).
-export async function until(cond: () => boolean, ms = 8000): Promise<void> {
+// Purpose: wait until `cond` (sync or async) holds, polling every 50 ms (timeout throws).
+export async function until(cond: () => boolean | Promise<boolean>, ms = 8000): Promise<void> {
     const end = Date.now() + ms
-    while (!cond()) {
+    while (!(await cond())) {
         if (Date.now() > end) throw new Error('timed out')
         await sleep(50)
     }
@@ -133,7 +99,7 @@ export function callFor(
         root,
         harness,
         meta: opts.meta,
-        ppid: opts.ppid ?? livePid(),
+        ppid: opts.ppid ?? fakePid(),
         pid: process.pid,
         exec: opts.exec ?? recordingExec(),
     }
@@ -162,21 +128,32 @@ export interface CliRun {
     stderr: string
 }
 
-// Purpose: command + argv that start the built CLI; with `viaShell`, through
-// `sh -c '<node> <cli> ...; exit $?'` so the CLI's parent is that shell (not the test runner).
-export function cliCommand(args: string[], viaShell = false): [string, string[]] {
+// A Node script that starts its arguments as a child with stdio inherited, forwards SIGTERM and SIGINT
+// and exits with the child's code. Started in front of the CLI, it gives the CLI a parent pid of its own
+// (the host pid of a pid-keyed server or hook) on every OS, without a shell.
+const PARENT_JS = [
+    "const { spawn } = require('node:child_process')",
+    'const [cmd, ...args] = process.argv.slice(1)',
+    "const child = spawn(cmd, args, { stdio: 'inherit' })",
+    "for (const s of ['SIGTERM', 'SIGINT']) process.on(s, () => child.kill(s))",
+    "child.on('exit', (code) => process.exit(code ?? 1))",
+].join('\n')
+
+// Purpose: command + argv that start the built CLI; with `viaParent`, through PARENT_JS so the CLI's
+// parent is that Node process (not the test runner).
+export function cliCommand(args: string[], viaParent = false): [string, string[]] {
     const argv = [CLI, ...args]
-    if (!viaShell) return [process.execPath, argv]
-    return ['sh', ['-c', `"${process.execPath}" ${argv.map((a) => `"${a}"`).join(' ')}; exit $?`]]
+    if (!viaParent) return [process.execPath, argv]
+    return [process.execPath, ['-e', PARENT_JS, process.execPath, ...argv]]
 }
 
-// Purpose: run the built CLI once with stdin and env; `viaShell` puts `sh` between us and node so the
-// CLI's ppid is that shell's pid (returned as `shellPid`).
+// Purpose: run the built CLI once with stdin and env; `viaParent` puts a Node parent between us and the
+// CLI, so the CLI's ppid is that parent's pid (returned as `parentPid`).
 export async function runCli(
     args: string[],
-    opts: { env?: NodeJS.ProcessEnv; stdin?: string; viaShell?: boolean } = {},
-): Promise<CliRun & { shellPid?: number }> {
-    const [cmd, argv] = cliCommand(args, opts.viaShell)
+    opts: { env?: NodeJS.ProcessEnv; stdin?: string; viaParent?: boolean } = {},
+): Promise<CliRun & { parentPid?: number }> {
+    const [cmd, argv] = cliCommand(args, opts.viaParent)
     const child = spawn(cmd, argv, { env: { ...process.env, ...opts.env } })
     let stdout = ''
     let stderr = ''
@@ -184,7 +161,7 @@ export async function runCli(
     child.stderr.on('data', (d: Buffer) => (stderr += d.toString()))
     child.stdin.end(opts.stdin ?? '')
     const code = await new Promise<number | null>((resolve) => child.once('close', resolve))
-    return { code, stdout, stderr, ...(opts.viaShell ? { shellPid: child.pid } : {}) }
+    return { code, stdout, stderr, ...(opts.viaParent ? { parentPid: child.pid } : {}) }
 }
 
 export const FIXTURE_HOME = path.join(REPO, 'test', 'fixtures', 'home')
@@ -203,7 +180,8 @@ export function snapshot(dir: string): { files: Record<string, string>; dirs: st
     const walk = (d: string) => {
         for (const e of fs.readdirSync(d, { withFileTypes: true })) {
             const p = path.join(d, e.name)
-            const rel = path.relative(dir, p)
+            // One separator on every OS, so tests compare with `.codex/config.toml`-style keys.
+            const rel = path.relative(dir, p).split(path.sep).join('/')
             if (e.isDirectory()) {
                 dirs.push(rel)
                 walk(p)

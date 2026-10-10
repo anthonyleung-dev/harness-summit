@@ -9,7 +9,7 @@ import { join } from '../../src/flows/join.js'
 import { read } from '../../src/flows/read.js'
 import { rename } from '../../src/flows/rename.js'
 import { send } from '../../src/flows/send.js'
-import { callFor, livePid, tmpRoot, until } from '../helpers/env.js'
+import { callFor, tmpRoot, until } from '../helpers/env.js'
 
 type Call = [string, ...unknown[]]
 
@@ -30,7 +30,7 @@ const notice = buildNotice([{ from: 'alice' }])
 
 describe('pi/OMP extension', () => {
     const root = tmpRoot()
-    const sender = callFor(root, 'claude', { ppid: livePid() })
+    const sender = callFor(root, 'claude')
     const piHost = callFor(root, 'pi', { ppid: process.pid })
     const ompHost = callFor(root, 'omp', { ppid: process.pid })
     const pi = fakeApi(true)

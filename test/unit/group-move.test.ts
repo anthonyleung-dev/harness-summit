@@ -12,7 +12,7 @@ import { whoami } from '../../src/flows/query.js'
 import { read } from '../../src/flows/read.js'
 import { rename } from '../../src/flows/rename.js'
 import { send } from '../../src/flows/send.js'
-import { callFor, errorCode, livePid, tmpRoot } from '../helpers/env.js'
+import { callFor, errorCode, tmpRoot } from '../helpers/env.js'
 import { foldersOf } from '../helpers/state.js'
 
 describe('group move', () => {
@@ -22,8 +22,8 @@ describe('group move', () => {
     })
 
     it('two agents with the same name move into one group at once: one wins, the loser stays whole', async () => {
-        const a = callFor(root, 'claude', { ppid: livePid() })
-        const b = callFor(root, 'claude', { ppid: livePid() })
+        const a = callFor(root, 'claude')
+        const b = callFor(root, 'claude')
         const ja = await join(a)
         const jb = await join(b)
         await rename(a, 'same')
@@ -43,8 +43,8 @@ describe('group move', () => {
     })
 
     it('a failed folder move undoes the name claim; the inbox and the old map stay as they were', async () => {
-        const a = callFor(root, 'claude', { ppid: livePid() })
-        const s = callFor(root, 'claude', { ppid: livePid() })
+        const a = callFor(root, 'claude')
+        const s = callFor(root, 'claude')
         const ja = await join(a)
         await join(s)
         await rename(a, 'mover')
@@ -58,7 +58,7 @@ describe('group move', () => {
     })
 
     it('a move completes in order: new map, folder, host record, then the old map is released', async () => {
-        const a = callFor(root, 'claude', { ppid: livePid() })
+        const a = callFor(root, 'claude')
         const ja = await join(a)
         await rename(a, 'walker')
         expect(await group(a, 'g7')).toMatchObject({ moved: true, groupKey: 'g7', name: 'walker' })

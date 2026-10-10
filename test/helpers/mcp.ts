@@ -11,8 +11,8 @@ type Pending = { resolve: (v: any) => void }
 export interface StartOptions {
     harness: Harness
     root: string
-    // Start through `sh -c '...; exit $?'` so the server's ppid is that shell, not the test runner.
-    viaShell?: boolean
+    // Start through a Node parent (cliCommand) so the server's ppid is that parent, not the test runner.
+    viaParent?: boolean
     env?: NodeJS.ProcessEnv
 }
 
@@ -48,7 +48,7 @@ export class McpProc {
     // Purpose: start one server process.
     static start(opts: StartOptions): McpProc {
         const env = { ...process.env, ...opts.env, HARNESS_SUMMIT_HOME: opts.root }
-        const [cmd, argv] = cliCommand(['mcp', '--harness', opts.harness], opts.viaShell)
+        const [cmd, argv] = cliCommand(['mcp', '--harness', opts.harness], opts.viaParent)
         const child = spawn(cmd, argv, { env })
         return new McpProc(child)
     }

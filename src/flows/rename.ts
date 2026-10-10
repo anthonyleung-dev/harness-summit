@@ -1,8 +1,8 @@
 // summit_rename (SPEC §2, §5): set the display name in the group's name map.
 //
-// Name takeover (REVIEW M5, owner decision): a name held by an agent that is gone (`alive: false`:
-// its pid is dead or reused) is taken over. A holder with `alive: "unknown"` (OpenCode, a Codex agent
-// whose server pid is gone (D5), or a /proc read that failed) is taken over only with `force`. The holder keeps its folder; its map entry goes
+// Name takeover (REVIEW M5, owner decision): a name held by an agent that is gone (`alive: false`: no
+// server beat it for HEARTBEAT_STALE_MS) is taken over. A holder with `alive: "unknown"` (OpenCode) is
+// taken over only with `force`. The holder keeps its folder; its map entry goes
 // and its agent.json name becomes null, so it can never write a second `<name>.md` next to the new
 // holder. The result says why a name was taken over (`takeover.reason`, O1).
 //
@@ -90,7 +90,7 @@ export async function assertNameFree(
 ): Promise<{ agent: AgentRecord; groupKey: string; reason: TakeoverReason } | null> {
     const holder = await nameHolder(root, groupKey, m, name, uuid)
     if (holder === null) return null
-    const alive = isAlive(holder.agent)
+    const alive = await isAlive(root, groupKey, holder.agent)
     if (alive === true || (alive === 'unknown' && !force)) {
         const hint =
             alive === 'unknown'

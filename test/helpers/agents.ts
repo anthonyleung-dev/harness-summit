@@ -1,14 +1,17 @@
 // Shared test helpers that build agents through the real flows.
+import { HEARTBEAT_STALE_MS } from '../../src/core/heartbeat.js'
 import { join } from '../../src/flows/join.js'
 import { rename } from '../../src/flows/rename.js'
-import { callFor, codexMeta, deadPid } from './env.js'
+import { callFor, codexMeta, fakePid } from './env.js'
+import { ageHeartbeat } from './state.js'
 
-// Purpose: a Codex agent named `name` that joined through an MCP server that has exited, and the call
-// of the same thread resumed under a new server (`codex resume`: same thread id, new server pid).
+// Purpose: a Codex agent named `name` that joined through an MCP server that has exited (no beat for
+// longer than HEARTBEAT_STALE_MS), and the call of the same thread resumed under a new server
+// (`codex resume`: same thread id, new server pid).
 export async function resumedCodex(root: string, name: string, threadId = 'T-cx') {
-    const oldServer = await deadPid()
-    const before = { ...callFor(root, 'codex', { meta: codexMeta(threadId) }), pid: oldServer }
+    const before = { ...callFor(root, 'codex', { meta: codexMeta(threadId) }), pid: fakePid() }
     const joined = await join(before)
     await rename(before, name)
-    return { joined, oldServer, resumed: callFor(root, 'codex', { meta: codexMeta(threadId) }) }
+    ageHeartbeat(joined.folder, HEARTBEAT_STALE_MS + 5_000)
+    return { joined, resumed: callFor(root, 'codex', { meta: codexMeta(threadId) }) }
 }

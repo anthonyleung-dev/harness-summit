@@ -1,24 +1,22 @@
 // Lock files (SPEC §5): O_EXCL create, retry with backoff. Used by members.json (`members.lock`) and
 // the per-agent read lock (`.cursor.lock`).
 //
-// Each holder writes one owner line into its lock: a random token, its pid and the pid's start time
-// (`<token> <pid> <start|-> <ISO time>`). A holder releases only its own token, so a holder never
-// deletes another holder's lock (REVIEW m7).
+// Each holder writes one owner line into its lock: a random token and the time it took the lock
+// (`<token> <ISO time>`). A holder releases only its own token, so a holder never deletes another
+// holder's lock (REVIEW m7).
 //
-// A lock is stale when its owner process is gone (D3, D4): the pid is dead, a zombie or now names
-// another process (the one liveness probe, src/core/proc.ts isProcessAlive), or the owner is this
-// process and no longer holds that token (a release that failed). A live owner keeps its lock however
-// old it is, so a live holder can wait as long as it needs (a group move holds `members.lock` while it
-// waits for a `.cursor.lock`). Age (LOCK_STALE_MS) decides only when the owner cannot be identified:
-// a lock file without a readable owner line (a holder died between the create and the write), an
-// owner whose liveness is unknown (DELTA-REVIEW-3 E2), an owner line without a start time whose pid
-// runs (the pid may be reused, E3), and the break lock below.
+// A lock is a lease (src/core/lease.ts): while it holds the lock, the holder sets the lock file's mtime
+// to now every LEASE_REFRESH_MS. A lock is stale when its mtime is older than LOCK_STALE_MS (its holder
+// stopped refreshing: it died, or it hangs), or when it holds a token that this process abandoned (its
+// release failed). A live holder keeps its lock however long it holds it (a group move holds
+// `members.lock` while it waits for a `.cursor.lock`). No OS process inspection is involved: the same
+// rule runs on Linux, macOS and Windows.
 //
 // Breakers are serialized by a second lock, `<lock>.break`, so a breaker never moves a lock that
 // another waiter took after an earlier break (D3). Under the break lock the waiter re-reads the lock,
 // checks that it is still the stale file it saw, and renames it to a unique tomb (F10); the tomb is
 // removed when it holds that content, else it is linked back. The break lock is held only for these
-// few file operations, so it may go stale by age as well as by owner death. Breaking a stale break
+// few file operations and is not refreshed; it goes stale by age like any lock. Breaking a stale break
 // lock is not serialized itself: that is a known limit (SPEC §5, E4).
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs/promises'
@@ -26,9 +24,9 @@ import path from 'node:path'
 import { z } from 'zod'
 
 import { hasErrno, summitError } from './errors.js'
-import { readTextFile } from './fsx.js'
+import { readTextFile, renameRetry } from './fsx.js'
+import { startLease } from './lease.js'
 import { log } from './log.js'
-import { isProcessAlive, processStartTime } from './proc.js'
 
 export const LOCK_STALE_MS = 10_000
 const LOCK_TIMEOUT_MS = 15_000
@@ -41,68 +39,51 @@ export interface LockOptions<T = unknown> {
     releaseAt?: (result: T) => string
 }
 
-// The owner line of a lock file. `start` is null when /proc could not tell, or in the round-2 format
-// (`<token> <pid> <ISO time>`), which is still read so a lock left by an older server breaks too. A
-// lock without a start time breaks at once when its pid is gone, else by age (E3).
-const LockOwnerSchema = z.object({
-    token: z.string().min(1),
-    pid: z.number().int().positive(),
-    start: z.number().int().nonnegative().nullable(),
-})
+// The owner of a lock file: its token. Older servers wrote `<token> <pid> <ISO time>` (round 2) and
+// `<token> <pid> <start|-> <ISO time>` (round 3); both still parse, so their locks release and break
+// by the same rules (their holders never refresh, so they break by age).
+const LockOwnerSchema = z.object({ token: z.string().min(1) })
 export type LockOwner = z.infer<typeof LockOwnerSchema>
 
-// A lock file as read from disk: its content and its last write time.
+// A lock file as read from disk: its content and its last write (or refresh) time.
 interface LockFile {
     content: string
     mtimeMs: number
 }
 
-// The start time of this process once read (it never changes). A failed read is not kept: the next lock
-// reads again, so one transient /proc error never turns every later lock into an age-only lock (G1).
-let ownStart: number | null = null
-// The tokens of the locks this process holds now. A lock file that names this process as its owner but
-// holds a token that is not here was left behind by this process (its release failed): it is stale.
-const heldTokens = new Set<string>()
+// Tokens of locks this process failed to remove on release. A lock file that holds one of them is
+// stale at once for every later caller in this process: nobody refreshes or releases it any more.
+const abandonedTokens = new Set<string>()
 
 // Purpose: wait `ms` milliseconds (the one sleep helper; tests import it too).
 export function sleep(ms: number): Promise<void> {
     return new Promise((r) => setTimeout(r, ms))
 }
 
-// Purpose: the one owner line format (`<token> <pid> <start|-> <ISO time>`, parsed by parseLockOwner).
-export function formatLockOwner(token: string, pid: number, start: number | null, at = new Date()): string {
-    return `${token} ${pid} ${start ?? '-'} ${at.toISOString()}\n`
+// Purpose: the one owner line format (`<token> <ISO time>`, parsed by parseLockOwner).
+export function formatLockOwner(token: string, at = new Date()): string {
+    return `${token} ${at.toISOString()}\n`
 }
 
-// Purpose: the owner line this process writes into a lock it takes.
-function ownerLine(token: string): string {
-    if (ownStart === null) ownStart = processStartTime(process.pid)
-    return formatLockOwner(token, process.pid, ownStart)
-}
-
-// Purpose: read the owner of a lock file's content, or null when it has no valid owner line.
+// Purpose: read the owner of a lock file's content, or null when it has no valid owner line. Accepts
+// the current line and the two older ones (their pid field must be a positive integer).
 export function parseLockOwner(content: string): LockOwner | null {
     const f = content.trim().split(' ')
-    if (f.length !== 3 && f.length !== 4) return null
-    const start = f.length === 3 || f[2] === '-' ? null : Number(f[2])
-    const parsed = LockOwnerSchema.safeParse({ token: f[0], pid: Number(f[1]), start })
+    if (f.length < 2 || f.length > 4) return null
+    if (f.length > 2 && !/^[1-9]\d*$/.test(f[1] ?? '')) return null
+    const parsed = LockOwnerSchema.safeParse({ token: f[0] })
     return parsed.success ? parsed.data : null
 }
 
-// Purpose: tell whether a lock file is stale: its owner process is gone, or it names this process with
-// a token this process does not hold. When the owner cannot be identified (no owner line, liveness
-// unknown (E2), or a running pid without a start time (E3)), it is stale once written more than
-// LOCK_STALE_MS ago. With `byAge` (the break lock), age alone also makes it stale.
-function isStale(lock: LockFile, byAge = false): boolean {
-    const old = Date.now() - lock.mtimeMs > LOCK_STALE_MS
+// Purpose: tell whether a lock file is stale: not refreshed for LOCK_STALE_MS, or holding a token this
+// process abandoned. A lock without a valid owner line (a holder died between the create and the
+// write) is stale by the same age rule.
+function isStale(lock: LockFile): boolean {
     const owner = parseLockOwner(lock.content)
-    if (owner === null || (byAge && old)) return old
-    if (owner.pid === process.pid) return !heldTokens.has(owner.token)
-    const alive = isProcessAlive(owner.pid, owner.start)
-    if (alive === false) return true
-    if (alive === true && owner.start !== null) return false
-    log('debug', 'isStale', 'owner cannot be identified; age rule', { pid: owner.pid, alive, old })
-    return old
+    if (owner !== null && abandonedTokens.has(owner.token)) return true
+    const age = Date.now() - lock.mtimeMs
+    if (age > LOCK_STALE_MS) log('debug', 'isStale', 'lock not refreshed in time', { age })
+    return age > LOCK_STALE_MS
 }
 
 // Purpose: read a lock file, or null when it does not exist (also when its folder moved away).
@@ -112,27 +93,34 @@ async function readLock(lockPath: string): Promise<LockFile | null> {
     return content === null || stat === null ? null : { content, mtimeMs: stat.mtimeMs }
 }
 
+// Errno codes that mean "the name is still taken" on Windows: after a release, a file system without
+// POSIX delete semantics (FAT, exFAT, older NTFS drivers) keeps the name "delete pending" for a moment,
+// and a create then fails with EPERM, not EEXIST (XPLAT-AUDIT D4). On Linux and macOS these codes are a
+// real refusal and stay SUMMIT_IO.
+const WIN_TAKEN = process.platform === 'win32' ? ['EPERM', 'EACCES', 'EBUSY'] : []
+
+// Purpose: tell whether a create error means "another holder has the name" (retry later).
+function isTaken(err: unknown): boolean {
+    return hasErrno(err, 'EEXIST') || WIN_TAKEN.some((c) => hasErrno(err, c))
+}
+
 // Purpose: try once to create the lock with our owner line; true when we hold it. With `missingOk`, a
 // missing parent folder reads as "not taken" instead of SUMMIT_IO.
-// The token counts as held from before the create, so no other caller in this process ever reads the
-// new file as an orphan of this process.
 async function tryCreate(lockPath: string, token: string, missingOk = false): Promise<boolean> {
-    heldTokens.add(token)
     let created = false
     try {
         const fh = await fs.open(lockPath, 'wx')
         created = true
         try {
-            await fh.writeFile(ownerLine(token))
+            await fh.writeFile(formatLockOwner(token))
         } finally {
             await fh.close()
         }
         return true
     } catch (err) {
-        heldTokens.delete(token)
         // A file without our owner line would block every waiter for LOCK_STALE_MS.
         if (created) await fs.rm(lockPath, { force: true }).catch(() => undefined)
-        if (hasErrno(err, 'EEXIST') || (missingOk && hasErrno(err, 'ENOENT'))) return false
+        if (isTaken(err) || (missingOk && hasErrno(err, 'ENOENT'))) return false
         throw summitError('SUMMIT_IO', `cannot create ${lockPath}`, 'tryCreate', { lockPath }, err)
     }
 }
@@ -144,7 +132,7 @@ async function tryCreate(lockPath: string, token: string, missingOk = false): Pr
 async function removeByTomb(file: string, seen: string): Promise<boolean> {
     const tomb = `${file}.${randomUUID()}.tomb`
     try {
-        await fs.rename(file, tomb)
+        await renameRetry(file, tomb)
     } catch (err) {
         if (hasErrno(err, 'ENOENT')) return false
         throw summitError('SUMMIT_IO', `cannot break ${file}`, 'removeByTomb', { file }, err)
@@ -171,7 +159,7 @@ async function takeBreakLock(lockPath: string): Promise<string | null> {
     const token = randomUUID()
     if (await tryCreate(breakPath, token, true)) return token
     const held = await readLock(breakPath)
-    if (held !== null && isStale(held, true) && (await removeByTomb(breakPath, held.content))) {
+    if (held !== null && isStale(held) && (await removeByTomb(breakPath, held.content))) {
         log('warn', 'takeBreakLock', 'broke a stale break lock', { breakPath, owner: held.content.trim() })
     }
     return null
@@ -218,21 +206,26 @@ async function acquireLock(lockPath: string, mkdir: boolean): Promise<string> {
     }
 }
 
-// Purpose: release the lock only when it still holds our token. The token stops counting as held even
-// when the release fails, so a lock file left behind is stale for every later caller in this process.
+// Purpose: release the lock only when it still holds our token. When the remove fails, the token is
+// abandoned: the file left behind is stale at once for every later caller in this process, and stale by
+// age (no refresh) for every other process.
 async function releaseLock(lockPath: string, token: string): Promise<void> {
-    try {
-        const content = await readTextFile(lockPath).catch((err) => {
-            log('error', 'releaseLock', 'cannot read the lock; left in place', { lockPath, error: String(err) })
-            return null
-        })
-        if (content !== null && content.startsWith(token + ' ')) {
-            await fs.rm(lockPath, { force: true })
-            return
-        }
+    const content = await readTextFile(lockPath).catch((err) => {
+        log('error', 'releaseLock', 'cannot read the lock; left in place', { lockPath, error: String(err) })
+        abandonedTokens.add(token)
+        return null
+    })
+    if (content === null) return
+    if (!content.startsWith(token + ' ')) {
         log('warn', 'releaseLock', 'lock no longer ours; left in place', { lockPath })
-    } finally {
-        heldTokens.delete(token)
+        return
+    }
+    try {
+        await fs.rm(lockPath, { force: true })
+    } catch (err) {
+        abandonedTokens.add(token)
+        log('error', 'releaseLock', 'cannot remove the lock; abandoned', { lockPath, error: String(err) })
+        throw err
     }
 }
 
@@ -262,17 +255,20 @@ async function dropCarriedBreakFiles(lockPath: string): Promise<void> {
     }
 }
 
-// Purpose: run `fn` while holding the lock file `lockPath` (N4: the one acquire-run-release). The lock
-// is released at `opts.releaseAt(result)` when `fn` succeeded and moved the lock, else where it was
-// taken. A moved lock leaves no break file of its old path behind in its new folder (E5).
+// Purpose: run `fn` while holding the lock file `lockPath` (N4: the one acquire-run-release), and keep
+// the lease fresh while `fn` runs (src/core/lease.ts). The lock is released at `opts.releaseAt(result)`
+// when `fn` succeeded and moved the lock, else where it was taken. A moved lock is not refreshed after
+// the move (its old path is gone), which is fine: the release follows at once. A moved lock leaves no break file of its old path behind in its new folder (E5).
 export async function withLock<T>(lockPath: string, fn: () => Promise<T>, opts: LockOptions<T> = {}): Promise<T> {
     const token = await acquireLock(lockPath, opts.mkdir !== false)
+    const stopLease = startLease(lockPath, token)
     let releaseAt = lockPath
     try {
         const result = await fn()
         if (opts.releaseAt) releaseAt = opts.releaseAt(result)
         return result
     } finally {
+        stopLease()
         if (releaseAt !== lockPath) await dropCarriedBreakFiles(releaseAt)
         await releaseLock(releaseAt, token)
     }
