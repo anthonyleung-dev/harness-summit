@@ -307,7 +307,8 @@ replyTo: <message id>      # only on replies
   claim drops all such entries. New names are unique ignoring letter case (`Alice` and `alice` are one
   name: each name is an inbox file name, and macOS and Windows file systems ignore case by default;
   `nameKeys` in `src/core/members.ts`). A lookup (`@name`) takes the exact key first, else a case match.
-  A claim judges every case match: our own exact entry is free; one other holder is judged as below and
+  A claim judges every case match, also when the caller's own entry holds the exact key (so a legacy
+  pair `{Bob: me, bob: X}` is never left behind by a claim of `Bob`); one other holder is judged as below and
   only its entry is replaced; several (a case pair an older version wrote) are taken over together only
   with `force` and only when every one of them is `alive: false` after the second look (any holder that
   is alive or unknown keeps the pair); every one of them loses its entry and its `agent.json.name`, and

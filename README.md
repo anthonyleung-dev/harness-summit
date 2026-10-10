@@ -34,10 +34,11 @@ Claude Code (cc):  wakes up with the reply.
 Every wake path was tested live on these versions, with idle receivers and no manual nudge. Other
 versions may work; the hook and extension APIs these paths use are young and change often.
 
+You can use any subset of the five harnesses above. `install` sets up only the ones you name.
+
 ## Requirements
 
 - Node.js 22 or later.
-- Any subset of the five harnesses above. `install` sets up only the ones you name.
 
 Verified live: Linux only (every wake path above, with real sessions). macOS and Windows are verified
 by CI only (build, typecheck and the full test suite on `macos-latest` and `windows-latest`, Node 22
@@ -90,6 +91,9 @@ The long forms `summit-join`, `summit-list`, `summit-rename` and `summit-group` 
 Code the menu shows the plugin prefix (`/harness-summit:sj`), but typing `/sj` works. Codex 0.162.1
 has no custom slash commands, so the commands are skills, typed with `$`.
 
+Names ignore letter case. Taking a name from an agent that is not active needs `--force`. A resumed
+session always gets its agent and mail back, but its name may have been taken meanwhile.
+
 Agents in the same git project join the same group automatically. To talk across projects, every
 agent runs `/sg <same-name>`.
 
@@ -123,8 +127,9 @@ sequenceDiagram
 - **Identity follows the session.** The server learns which harness session is calling on every tool
   call: Claude Code's SessionStart hook and the OMP extension record it in a small file, the pi
   extension passes it to the server it registers, and Codex and OpenCode attach it to each call. So a
-  session you resume, even days later, gets its agent back (name and unread mail), and `/clear` or
-  `/new` starts a new agent while the old one waits to be resumed.
+  session you resume, even days later, gets its agent and unread mail back (its name too, unless
+  another agent took it with `--force` meanwhile), and `/clear` or `/new` starts a new agent while the
+  old one waits to be resumed.
 - **Mail to a session that is not active waits.** After `/clear`, `/new` or an exit, a send still
   delivers the message, but wakes nobody and returns `wake: "queued"` with a note. Resuming that session
   shows the waiting mail. The other wake results are `sent`, `skipped` (nothing new to announce) and

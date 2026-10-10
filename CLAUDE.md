@@ -45,7 +45,7 @@ npm run dev -- <args>   # run the CLI from source with tsx
       via its parent pid on EVERY call and trusts it only when written after its own start minus 30 s
       (a reused pid must not adopt a dead session's file). UserPromptSubmit refreshes the file from its
       stdin `session_id` (same writer), so a `/mcp` reconnect recovers on the next prompt; FileChanged and
-      the OMP `ext-session` only renew (`renewSession`: never switch the session).
+      the OMP `ext-session` use `renewSession` (renews, or writes when none is recorded; never switches).
     - OMP renews its session file on `agent_start` too (`hook ext-session`).
     - pi: `pi-<sessionId>` from env `SUMMIT_SESSION_ID`: the extension calls `registerMcpServer` on every
       `session_start`. Install writes NO pi mcp.json entry (a same-name entry would win) and retires an
@@ -132,7 +132,8 @@ these has exactly one implementation:
 | Freshness, sleep    | `src/core/freshness.ts` (`isStaleMtime`, `confirmGone`, `sleep`)   |
 | Busy errno (Win)    | `isBusyErrno` in `src/core/fsx.ts`                                 |
 | Name lookup         | `lookupName` in `src/core/members.ts` (exact, else one case match) |
-| Name claims, undo   | `src/flows/claim.ts` (`claimName`, `restoreHolder`, `nameKeys`)    |
+| Name claims, undo   | `src/flows/claim.ts` (`claimName`, `restoreHolder`)                |
+| Case matches        | `nameKeys` in `src/core/members.ts` (exact key first)              |
 | Device names        | `isReservedName` in `schemas.ts`, `inboxLabel` in `agents.ts`      |
 | Stored vs new names | `StoredNameSchema`, `NameSchema`, `isSenderLabel` in `schemas.ts`  |
 | Same file path      | `samePath` in `src/core/project.ts`                                |
