@@ -13,6 +13,9 @@ permissions:
 jobs:
     publish:
         runs-on: ubuntu-latest
+        # Must match the environment named in the npm trusted publisher settings. Add required reviewers
+        # to this environment in the GitHub repo settings to approve each release by hand.
+        environment: npm
         timeout-minutes: 20
         steps:
             - uses: actions/checkout@v7.0.1
