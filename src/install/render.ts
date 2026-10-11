@@ -1,6 +1,7 @@
 // Renderers: command files for every harness and the Claude Code plugin, all from templates.ts.
 import { jsonText } from '../core/fsx.js'
 import { SUMMIT_NAME, type Harness } from '../core/schemas.js'
+import { SUMMIT_VERSION } from '../core/version.js'
 import { COMMANDS, GENERATED_MARKER, type CommandTemplate } from './templates.js'
 
 // How a registration starts the CLI: absolute node + absolute cli in installs, `node` +
@@ -102,7 +103,7 @@ function hookCommand(launch: Launch, sub: string): { type: 'command'; command: s
 export function renderClaudePlugin(launch: Launch): RenderedFile[] {
     const manifest = {
         name: SUMMIT_NAME,
-        version: '1.0.0',
+        version: SUMMIT_VERSION,
         description: 'harness-summit: message other coding-agent sessions on this machine',
     }
     const mcp = { mcpServers: { [SUMMIT_NAME]: mcpLaunch(launch, 'claude') } }

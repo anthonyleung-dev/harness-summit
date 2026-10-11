@@ -15,10 +15,10 @@ import { configureLog, log } from '../core/log.js'
 import { DIR_MODE, summitRoot } from '../core/paths.js'
 import { SUMMIT_NAME, type Harness } from '../core/schemas.js'
 import { cleanupSessions } from '../core/sessions.js'
+import { SUMMIT_VERSION } from '../core/version.js'
 import { callHostKey, type CallContext } from '../flows/context.js'
 import { TOOLS, type ToolDef } from './tools.js'
 
-export const SERVER_VERSION = '1.0.0'
 // How long shutdown waits for running tool calls before it exits anyway (REVIEW m7).
 export const SHUTDOWN_GRACE_MS = 3_000
 
@@ -68,7 +68,7 @@ export function createSummitServer(options: ServerOptions): McpServer {
     const exec = options.exec ?? defaultExec
     const hostPid = options.hostPid ?? process.ppid
     const startedAt = options.startedAt ?? Date.now()
-    const server = new McpServer({ name: SUMMIT_NAME, version: SERVER_VERSION })
+    const server = new McpServer({ name: SUMMIT_NAME, version: SUMMIT_VERSION })
     for (const def of TOOLS as ToolDef<z.ZodObject, z.ZodObject>[]) {
         server.registerTool(
             def.name,

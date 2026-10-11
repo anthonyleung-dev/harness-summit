@@ -1,0 +1,36 @@
+# Publish to npm when a version tag (v1.2.3) is pushed. Uses npm trusted publishing (OIDC): no token
+# is stored in the repo. The package's npm settings must name this repo and this workflow file.
+name: release
+
+on:
+    push:
+        tags: ['v*']
+
+permissions:
+    contents: read
+    id-token: write
+
+jobs:
+    publish:
+        runs-on: ubuntu-latest
+        timeout-minutes: 20
+        steps:
+            - uses: actions/checkout@v7.0.1
+            - uses: actions/setup-node@v7.0.0
+              with:
+                  node-version: '24'
+                  registry-url: 'https://registry.npmjs.org'
+            # Trusted publishing needs a recent npm; vitest 5 also needs it (repo CLAUDE.md).
+            - run: npm install -g npm@latest
+            - name: Tag must match package.json version
+              run: |
+                  v="$(node -p "require('./package.json').version")"
+                  if [ "v$v" != "$GITHUB_REF_NAME" ]; then
+                      echo "tag $GITHUB_REF_NAME does not match package.json version $v" >&2
+                      exit 1
+                  fi
+            - run: npm ci
+            - run: npm run typecheck
+            - run: npm run format:check
+            # prepublishOnly runs the build and the full test suite before the upload.
+            - run: npm publish --provenance --access public

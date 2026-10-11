@@ -28,7 +28,12 @@
         "url": "https://github.com/anthonyleung-dev/harness-summit/issues"
     },
     "type": "module",
-    "private": true,
+    "files": [
+        "dist",
+        "adapters",
+        "README.md",
+        "LICENSE"
+    ],
     "bin": {
         "harness-summit": "dist/cli.js"
     },
@@ -43,7 +48,8 @@
         "test:integration": "npm run build && vitest run test/integration",
         "format": "prettier --write .",
         "format:check": "prettier --check .",
-        "dev": "tsx src/cli.ts"
+        "dev": "tsx src/cli.ts",
+        "prepublishOnly": "npm test"
     },
     "dependencies": {
         "@modelcontextprotocol/sdk": "^1.32.1",

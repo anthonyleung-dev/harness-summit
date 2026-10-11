@@ -49,15 +49,16 @@ live run.
 ## Quick start
 
 ```sh
-git clone https://github.com/anthonyleung-dev/harness-summit.git
-cd harness-summit
-npm install
-npm run build
+npm install -g harness-summit
 
-node dist/cli.js install --harness all --dry-run   # print the plan; writes nothing
-node dist/cli.js install --harness all             # or: --harness claude,codex
-node dist/cli.js doctor                            # check what is registered
+harness-summit install --harness all --dry-run   # print the plan; writes nothing
+harness-summit install --harness all             # or: --harness claude,codex
+harness-summit doctor                            # check what is registered
 ```
+
+Install it globally, not with `npx`: the registrations point at the absolute path of the installed
+CLI, and an `npx` cache can be cleared under them. To run from a checkout instead, see
+[Development](#development).
 
 Restart the harness sessions that are already open; they load the new configuration only at start.
 Then, in two sessions in the same git project:
@@ -73,7 +74,7 @@ Session B wakes up, reads the message and answers alice.
 To remove everything that `install` added:
 
 ```sh
-node dist/cli.js uninstall --harness all
+harness-summit uninstall --harness all
 ```
 
 ## Commands
@@ -185,8 +186,8 @@ You do not need to copy the mail rules: `summit_join` and every `summit_read` re
 - A second run changes nothing. An install that fails half way can still be uninstalled.
 - `uninstall` restores a file byte for byte when you did not edit it after install. When you did, it
   removes only the harness-summit keys.
-- Registrations use absolute paths to `node` and to `dist/cli.js`. If you move the checkout, run
-  `install` again.
+- Registrations use absolute paths to `node` and to `dist/cli.js`. Run `install` again after you
+  move the checkout, upgrade the package, or switch the Node.js version (for example with nvm).
 
 ## On-disk layout
 
@@ -211,6 +212,12 @@ real path; on Windows with a lower-case drive letter), or the group name after `
 ## Development
 
 ```sh
+git clone https://github.com/anthonyleung-dev/harness-summit.git
+cd harness-summit
+npm install
+npm run build
+node dist/cli.js install --harness all   # registers this checkout
+
 npm test                 # build, then unit and integration tests (vitest)
 npm run typecheck
 npm run format:check
@@ -219,6 +226,8 @@ npm run format:check
 - Try a change without installing: `claude --plugin-dir plugins/claude`, or
   `pi -e adapters/pi-omp/harness-summit.ts` (the same file works for `omp -e`).
 - Tests set `HARNESS_SUMMIT_HOME` to a temp dir and run install only against a temp home.
+- Release: bump `version` in `package.json` (the only place it is written), commit, then push a tag
+  `v<version>`. The `release` workflow checks the tag, runs the tests and publishes to npm.
 - [SPEC.md](SPEC.md) is the design. [CLAUDE.md](CLAUDE.md) lists the harness facts that are easy to
   get wrong.
 
