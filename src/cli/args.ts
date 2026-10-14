@@ -16,6 +16,7 @@ const OPTIONS = {
     home: { type: 'string' },
     'dry-run': { type: 'boolean' },
     help: { type: 'boolean', short: 'h' },
+    version: { type: 'boolean', short: 'v' },
 } as const
 
 export const CliArgsSchema = z.object({
@@ -28,6 +29,7 @@ export const CliArgsSchema = z.object({
     home: z.string().min(1),
     dryRun: z.boolean(),
     help: z.boolean(),
+    version: z.boolean(),
 })
 export type CliArgs = z.infer<typeof CliArgsSchema>
 
@@ -56,6 +58,7 @@ export function parseCliArgs(argv: string[]): CliArgs {
         home: typeof values.home === 'string' ? path.resolve(values.home) : os.homedir(),
         dryRun: values['dry-run'] === true,
         help: values.help === true,
+        version: values.version === true,
     })
 }
 
@@ -89,6 +92,6 @@ export function parsePid(value: string | undefined): number {
 // summit root log there; `--help`, no command, `--dry-run`, `doctor` and `gen-plugin` never create
 // it (REVIEW m1).
 export function logsToFile(args: CliArgs): boolean {
-    if (args.help || args.dryRun) return false
+    if (args.help || args.version || args.dryRun) return false
     return ['mcp', 'hook', 'notice', 'install', 'uninstall'].includes(args.cmd ?? '')
 }

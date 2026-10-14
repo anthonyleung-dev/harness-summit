@@ -45,6 +45,27 @@ describe('two claude-style servers (distinct ppids via a Node parent)', () => {
         const sendTool = tools.result.tools.find((t: { name: string }) => t.name === 'summit_send')
         expect(sendTool.inputSchema.required).toEqual(['to'])
         expect(Object.keys(sendTool.inputSchema.properties).sort()).toEqual(['body', 'message', 'replyTo', 'to'])
+        // MCP tool annotations: exact per tool, so a missing hint never falls back to the spec defaults
+        // (destructive, open world). summit_read marks mail read: never read-only.
+        const hints = (r: boolean, d: boolean | null, i: boolean | null, o: boolean) => ({
+            readOnlyHint: r,
+            ...(d === null ? {} : { destructiveHint: d }),
+            ...(i === null ? {} : { idempotentHint: i }),
+            openWorldHint: o,
+        })
+        const annotations = Object.fromEntries(
+            tools.result.tools.map((t: { name: string; annotations?: unknown }) => [t.name, t.annotations]),
+        )
+        expect(annotations).toEqual({
+            summit_join: hints(false, false, true, false),
+            summit_group: hints(false, true, true, false),
+            summit_rename: hints(false, true, true, false),
+            summit_send: hints(false, false, false, true),
+            summit_read: hints(false, true, false, false),
+            summit_members: hints(true, null, null, false),
+            summit_whoami: hints(true, null, null, false),
+            summit_bye: hints(false, true, true, false),
+        })
         await c.close()
     })
 

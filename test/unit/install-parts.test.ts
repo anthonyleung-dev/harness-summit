@@ -8,6 +8,7 @@ import { removeJsonKey, removeTomlBlock, setJsonKey, tomlBlock, upsertTomlBlock 
 import { codexTables } from '../../src/install/plan.js'
 import { renderClaudePlugin, renderCommands } from '../../src/install/render.js'
 import { COMMANDS } from '../../src/install/templates.js'
+import { TEST_LAUNCH, testLaunch } from '../helpers/install.js'
 
 const KEY = 'harness-summit'
 
@@ -43,10 +44,10 @@ describe('TOML block', () => {
     })
 
     it('the generated tables parse as TOML and carry the harness CLI env', () => {
-        const launch = { node: '/n', cli: '/c', env: { SUMMIT_CODEX_BIN: '/bin/codex' } }
+        const launch = testLaunch({ env: { SUMMIT_CODEX_BIN: '/bin/codex' } })
         const text = upsertTomlBlock('[mcp_servers.qmd]\ncommand = "qmd"\n', tomlBlock(codexTables(launch)), KEY)
         const server = (parseToml(text) as { mcp_servers: Record<string, any> }).mcp_servers[KEY]
-        expect(server).toMatchObject({ command: '/n', args: ['/c', 'mcp', '--harness', 'codex'] })
+        expect(server).toMatchObject({ command: launch.node, args: [launch.cli, 'mcp', '--harness', 'codex'] })
         expect(server.env).toEqual({ SUMMIT_CODEX_BIN: '/bin/codex' })
         expect(Object.keys(server.tools)).toHaveLength(8)
     })
@@ -151,7 +152,7 @@ describe('command templates', () => {
     })
 
     it('marks Claude skills user-only and ships exec-form hooks without matcher, rewakeMessage or watchPaths', () => {
-        const files = renderClaudePlugin({ node: 'N', cli: 'C' })
+        const files = renderClaudePlugin(TEST_LAUNCH)
         expect(
             files
                 .filter((f) => f.rel.startsWith('skills/'))
@@ -163,8 +164,8 @@ describe('command templates', () => {
                 hooks: [
                     {
                         type: 'command',
-                        command: 'N',
-                        args: ['C', 'hook', 'claude-file-changed'],
+                        command: TEST_LAUNCH.node,
+                        args: [TEST_LAUNCH.cli, 'hook', 'claude-file-changed'],
                         asyncRewake: true,
                         timeout: 20,
                     },
@@ -174,13 +175,20 @@ describe('command templates', () => {
         // Exec form (XPLAT-AUDIT B5): `args` present, so Claude Code spawns node with no shell on every OS.
         expect(hooks.SessionStart[0].hooks[0]).toEqual({
             type: 'command',
-            command: 'N',
-            args: ['C', 'hook', 'claude-session-start'],
+            command: TEST_LAUNCH.node,
+            args: [TEST_LAUNCH.cli, 'hook', 'claude-session-start'],
             timeout: 20,
         })
         expect(hooks.UserPromptSubmit).toEqual([
             {
-                hooks: [{ type: 'command', command: 'N', args: ['C', 'hook', 'claude-prompt-submit'], timeout: 10 }],
+                hooks: [
+                    {
+                        type: 'command',
+                        command: TEST_LAUNCH.node,
+                        args: [TEST_LAUNCH.cli, 'hook', 'claude-prompt-submit'],
+                        timeout: 10,
+                    },
+                ],
             },
         ])
         expect(hooks.SessionStart[0].matcher).toBeUndefined()

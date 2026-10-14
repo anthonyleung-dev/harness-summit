@@ -1,18 +1,17 @@
-// `harness-summit` CLI (SPEC §8): mcp, hook, notice, install, uninstall, doctor (+ gen-plugin, build
-// step). Only this module writes to stdout/stderr outside the MCP transport.
-import fs from 'node:fs'
-import path from 'node:path'
-
+// `harness-summit` CLI (SPEC §8): mcp, hook, notice, install, uninstall, doctor (+ gen-plugin, the build
+// step, left out of USAGE on purpose: it runs only in a source checkout, genPlugin.ts). Only this module
+// writes to stdout/stderr outside the MCP transport.
 import { summitError, toSummitError } from '../core/errors.js'
 import { configureLog, log } from '../core/log.js'
 import { noticeForHostKey } from '../core/notice.js'
 import { summitRoot } from '../core/paths.js'
+import { SUMMIT_VERSION } from '../core/version.js'
+import { FAIL_PREFIX } from '../install/actions.js'
 import { doctorReport } from '../install/doctor.js'
 import { runInstall, runUninstall } from '../install/install.js'
-import { devPluginLaunch, repoRoot } from '../install/launch.js'
-import { renderClaudePlugin } from '../install/render.js'
 import { runMcpServer } from '../server/server.js'
 import { logsToFile, parseCliArgs, parseHarness, parseHarnessList, parsePid, type CliArgs } from './args.js'
+import { genPlugin } from './genPlugin.js'
 import {
     claudeFileChanged,
     claudePromptSubmit,
@@ -23,6 +22,7 @@ import {
 } from './hooks.js'
 
 const USAGE = `usage: harness-summit <command>
+  --version, -v                                  print the version
   mcp --harness <claude|codex|pi|omp|opencode>   run the MCP stdio server
   hook claude-session-start                      Claude Code SessionStart hook (stdin JSON)
   hook claude-file-changed                       Claude Code FileChanged hook (stdin JSON)
@@ -47,17 +47,6 @@ function emit(r: HookResult): void {
     if (r.stdout) process.stdout.write(r.stdout)
     if (r.stderr) process.stderr.write(r.stderr)
     process.exitCode = r.exitCode
-}
-
-// Purpose: write the repo's dev plugin (plugins/claude) from the templates.
-function genPlugin(): string[] {
-    const dir = path.join(repoRoot(), 'plugins', 'claude')
-    return renderClaudePlugin(devPluginLaunch()).map((f) => {
-        const file = path.join(dir, f.rel)
-        fs.mkdirSync(path.dirname(file), { recursive: true })
-        fs.writeFileSync(file, f.content)
-        return `write   ${file}`
-    })
 }
 
 // Purpose: run the `hook` sub-commands.
@@ -92,11 +81,13 @@ async function runNotice(args: CliArgs): Promise<void> {
     if (notice !== null) process.stdout.write(notice + '\n')
 }
 
-// Purpose: run install or uninstall and print the report.
+// Purpose: run install or uninstall and print the report; exit 1 when a `fail` line says something was left.
 async function runInstallCmd(args: CliArgs): Promise<void> {
     const opts = { harnesses: parseHarnessList(args.harness), home: args.home, dryRun: args.dryRun }
     const lines = args.cmd === 'install' ? await runInstall(opts) : await runUninstall(opts)
     process.stdout.write((opts.dryRun ? ['(dry run: nothing written)', ...lines] : lines).join('\n') + '\n')
+    // A `fail` line: an action failed and what it owns is still there (its record too): exit 1.
+    if (lines.some((l) => l.startsWith(FAIL_PREFIX))) process.exitCode = 1
 }
 
 // Purpose: dispatch one command line. Returns when done; the MCP server keeps the process alive.
@@ -106,6 +97,10 @@ export async function main(argv: string[]): Promise<void> {
     const args = parseCliArgs(argv)
     configureLog({ component: args.cmd ?? 'cli', file: logsToFile(args) })
     log('debug', 'main', 'command', { cmd: args.cmd, sub: args.sub })
+    if (args.version) {
+        process.stdout.write(SUMMIT_VERSION + '\n')
+        return
+    }
     if (args.help || args.cmd === undefined) {
         process.stdout.write(USAGE + '\n')
         return

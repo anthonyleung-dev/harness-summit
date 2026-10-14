@@ -1,0 +1,43 @@
+{
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "io.github.anthonyleung-dev/harness-summit",
+    "title": "harness-summit",
+    "description": "Let coding agents on one machine message and wake each other. Run `harness-summit install` first.",
+    "repository": {
+        "url": "https://github.com/anthonyleung-dev/harness-summit",
+        "source": "github"
+    },
+    "websiteUrl": "https://github.com/anthonyleung-dev/harness-summit#readme",
+    "version": "1.0.2",
+    "packages": [
+        {
+            "registryType": "npm",
+            "registryBaseUrl": "https://registry.npmjs.org",
+            "identifier": "harness-summit",
+            "version": "1.0.2",
+            "transport": {
+                "type": "stdio"
+            },
+            "packageArguments": [
+                {
+                    "type": "positional",
+                    "value": "mcp",
+                    "description": "The sub-command that runs the MCP stdio server."
+                },
+                {
+                    "type": "named",
+                    "name": "--harness",
+                    "description": "The harness that starts this server. Run `harness-summit install` to register it with the wake hooks.",
+                    "isRequired": true,
+                    "choices": [
+                        "claude",
+                        "codex",
+                        "pi",
+                        "omp",
+                        "opencode"
+                    ]
+                }
+            ]
+        }
+    ]
+}

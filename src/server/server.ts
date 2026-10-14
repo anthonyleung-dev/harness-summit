@@ -72,7 +72,12 @@ export function createSummitServer(options: ServerOptions): McpServer {
     for (const def of TOOLS as ToolDef<z.ZodObject, z.ZodObject>[]) {
         server.registerTool(
             def.name,
-            { description: def.description, inputSchema: def.input, outputSchema: def.output },
+            {
+                description: def.description,
+                inputSchema: def.input,
+                outputSchema: def.output,
+                annotations: def.annotations,
+            },
             async (args: unknown, extra: { _meta?: Record<string, unknown> }) => {
                 const call: CallContext = {
                     root,

@@ -30,7 +30,20 @@ jobs:
             # vitest 5 does not install with the npm that ships with Node 22 (repo CLAUDE.md).
             - run: npm install -g npm@latest
             - run: npm ci
+            # The libraries that ship (MCP SDK, zod, jsonc-parser, smol-toml and their transitive deps) are
+            # devDependencies now, because esbuild bundles them into dist/cli.js. `--omit=dev` would skip
+            # exactly the code we publish, so the audit covers devDependencies too. One leg is enough: the
+            # lockfile is the same on every OS.
+            - name: Audit (fails on high or critical)
+              if: matrix.os == 'ubuntu-latest' && matrix.node == '22'
+              run: npm audit --audit-level=high
             - run: npm run build
+            # The build regenerates every generated file (plugins/claude, .claude-plugin, server.json). A
+            # committed copy that differs from the build output is stale, and a generated file nobody
+            # committed is missing: fail on both. The same step runs in release.yml; the logic lives in
+            # scripts/check-generated.ts, so both workflows share it on every OS.
+            - name: Generated files are up to date
+              run: npm run check:generated
             - run: npm run typecheck
             - run: npx vitest run
             - run: npm run format:check

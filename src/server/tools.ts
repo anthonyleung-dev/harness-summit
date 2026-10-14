@@ -1,6 +1,8 @@
 // The eight MCP tools (SPEC §2): Zod input and output schemas plus the flow each one runs.
 import { z } from 'zod'
 
+import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js'
+
 import { summitError } from '../core/errors.js'
 import { log } from '../core/log.js'
 import { CorruptSpanSchema, NameSchema, TakeoverSchema, UuidSchema } from '../core/schemas.js'
@@ -18,6 +20,8 @@ export interface ToolDef<I extends z.ZodObject, O extends z.ZodObject> {
     description: string
     input: I
     output: O
+    // Required: without it clients assume the spec defaults (destructive, open world) for the tool.
+    annotations: ToolAnnotations
     run: (call: CallContext, input: z.infer<I>) => Promise<z.infer<O>>
 }
 
@@ -150,6 +154,8 @@ export const TOOLS = [
             'The result carries guidance for summit mail.',
         input: Empty,
         output: JoinOutput,
+        // Not open world: a new join only runs local read-only queries (git rev-parse, opencode session.get).
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
         run: (call) => join(call),
     }),
     defineTool({
@@ -170,6 +176,8 @@ export const TOOLS = [
             moved: z.boolean(),
             takeover: TakeoverOutput,
         }),
+        // Idempotent: the same target group again is a no-op (`moved` false).
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
         run: (call, input) => group(call, input.name, input.force === true),
     }),
     defineTool({
@@ -188,6 +196,7 @@ export const TOOLS = [
             groupKey: z.string(),
             takeover: TakeoverOutput,
         }),
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
         run: (call, input) => rename(call, input.name, input.force === true),
     }),
     defineTool({
@@ -195,6 +204,8 @@ export const TOOLS = [
         description: 'Send a message to another agent of this group. The receiver is woken to read it.',
         input: SendInput,
         output: SendOutput,
+        // Open world: the wake spawns `codex queue` / `opencode api session.prompt` into another session.
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
         run: (call, input) => send(call, toSendInput(input)),
     }),
     defineTool({
@@ -202,6 +213,8 @@ export const TOOLS = [
         description: 'Return unread messages (oldest first) and mark them read, with guidance for summit mail.',
         input: Empty,
         output: ReadOutput,
+        // Not read-only, and destructive: it advances the cursor, and no tool returns those messages again.
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
         run: (call) => read(call),
     }),
     defineTool({
@@ -220,6 +233,9 @@ export const TOOLS = [
                 }),
             ),
         }),
+        // Read-only although each call beats the caller's heartbeat and may finish a half-done group move:
+        // housekeeping the server timer does anyway, not tool state. Same for summit_whoami.
+        annotations: { readOnlyHint: true, openWorldHint: false },
         run: (call) => members(call),
     }),
     defineTool({
@@ -227,6 +243,7 @@ export const TOOLS = [
         description: "Return this agent's uuid, name, group and folder, or joined=false.",
         input: Empty,
         output: WhoamiOutput,
+        annotations: { readOnlyHint: true, openWorldHint: false },
         run: (call) => whoami(call),
     }),
     defineTool({
@@ -235,6 +252,8 @@ export const TOOLS = [
         input: Empty,
         // `removed` lists exactly what went; the group folder and the other agents stay.
         output: z.object({ uuid: UuidSchema, groupKey: z.string(), removed: z.array(z.string()) }),
+        // Idempotent: a second call fails with SUMMIT_NOT_JOINED before any write.
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
         run: (call) => bye(call),
     }),
 ]

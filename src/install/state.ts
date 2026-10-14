@@ -18,6 +18,9 @@ export const InstallStateSchema = z.object({
     edits: z.record(z.string(), z.object({ existed: z.boolean(), preSha: z.string(), postSha: z.string() })),
     // External commands that ran (id -> true).
     execs: z.record(z.string(), z.boolean()),
+    // Refresh commands (a `sync` action, actions.ts): id -> the version the last successful run brought in.
+    // Optional, so a state file from an older release still reads; a missing entry means "never refreshed".
+    synced: z.record(z.string(), z.string()).optional(),
 })
 export type InstallState = z.infer<typeof InstallStateSchema>
 
@@ -55,7 +58,8 @@ export async function saveState(home: string, state: InstallState): Promise<void
     log('debug', 'saveState', 'install state written', { home })
 }
 
-// Purpose: tell whether the state records nothing (then the state file itself can go).
+// Purpose: tell whether the state records nothing (then the state file itself can go). `synced` does not
+// count: it only describes a command whose exec record is already in `execs`.
 export function isEmptyState(state: InstallState): boolean {
     return (
         Object.keys(state.files).length === 0 &&

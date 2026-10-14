@@ -17,7 +17,7 @@ import { readMembers, updateMembers } from '../../src/core/members.js'
 import { membersLock } from '../../src/core/paths.js'
 import { defaultGroupKey, namedGroupKey } from '../../src/core/project.js'
 import { HARNESSES } from '../../src/core/schemas.js'
-import { codexMeta, opencodeMeta, tmpDir } from '../helpers/env.js'
+import { codexMeta, opencodeMeta, REPO, tmpDir } from '../helpers/env.js'
 import { ageFile, lockLine, writeLockFile } from '../helpers/state.js'
 
 describe('host keys', () => {
@@ -33,6 +33,53 @@ describe('host keys', () => {
                 expect.objectContaining({ code: 'SUMMIT_NO_HOST_KEY' }),
             )
         }
+    })
+
+    for (const harness of ['claude', 'pi', 'omp'] as const) {
+        it(`names the install command when a ${harness} session is missing`, () => {
+            expect(() => hostKeyForSession(harness, undefined)).toThrow(
+                expect.objectContaining({
+                    code: 'SUMMIT_NO_HOST_KEY',
+                    message: expect.stringContaining(`harness-summit install --harness ${harness}`),
+                }),
+            )
+        })
+    }
+
+    it('names the public plugin marketplace when a claude session is missing', () => {
+        expect(() => hostKeyForSession('claude', undefined)).toThrow(
+            expect.objectContaining({
+                message: expect.stringContaining(
+                    '/plugin marketplace add anthonyleung-dev/harness-summit, then /plugin install harness-summit@harness-summit',
+                ),
+            }),
+        )
+    })
+
+    it('sends a node-shim user from the plugin route to the npm route, as separate commands', () => {
+        const message = (() => {
+            try {
+                hostKeyForSession('claude', undefined)
+            } catch (err) {
+                return (err as Error).message
+            }
+            return ''
+        })()
+        expect(message).toContain('a node shim such as Volta')
+        expect(message).toContain('the /plugin route starts `node` from PATH and cannot work for you')
+        expect(message).toContain(
+            'in Claude Code run /plugin uninstall harness-summit@harness-summit, then /plugin marketplace remove harness-summit; then run `npm i -g harness-summit`, then `harness-summit install --harness claude`',
+        )
+    })
+
+    it('never joins fix commands with && (Windows PowerShell 5.1 rejects it)', () => {
+        for (const harness of ['claude', 'pi', 'omp'] as const) {
+            expect(() => hostKeyForSession(harness, undefined)).toThrow(
+                expect.objectContaining({ message: expect.not.stringContaining('&&') }),
+            )
+        }
+        const fixText = fs.readFileSync(path.join(REPO, 'src', 'core', 'fixText.ts'), 'utf8')
+        expect(fixText.split('\n').filter((l) => l.includes('&&') && !l.trimStart().startsWith('//'))).toEqual([])
     })
 
     it('uses _meta for codex and opencode and fails without it', () => {
