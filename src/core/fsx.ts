@@ -90,11 +90,24 @@ export async function renameRetry(from: string, to: string): Promise<void> {
     }
 }
 
-// Purpose: tell whether a path exists; with `kind: 'dir'`, whether it is a directory.
-export async function pathExists(p: string, kind: 'any' | 'dir' = 'any'): Promise<boolean> {
+// Purpose: what is at a path (following symlinks): 'file', 'dir', 'other', or null when nothing is there (also
+// when a parent is not a dir). Other stat errors are SUMMIT_IO with the path.
+export async function pathKind(p: string): Promise<'file' | 'dir' | 'other' | null> {
     try {
         const st = await fs.stat(p)
-        return kind === 'any' || st.isDirectory()
+        return st.isDirectory() ? 'dir' : st.isFile() ? 'file' : 'other'
+    } catch (err) {
+        if (hasErrno(err, 'ENOENT') || hasErrno(err, 'ENOTDIR')) return null
+        log('warn', 'pathKind', 'stat failed', { path: p, error: String(err) })
+        throw summitError('SUMMIT_IO', `cannot stat ${p}`, 'pathKind', { path: p }, err)
+    }
+}
+
+// Purpose: tell whether a path exists; with `kind: 'dir'` or `'file'`, whether it is one.
+export async function pathExists(p: string, kind: 'any' | 'dir' | 'file' = 'any'): Promise<boolean> {
+    try {
+        const st = await fs.stat(p)
+        return kind === 'any' || (kind === 'dir' ? st.isDirectory() : st.isFile())
     } catch {
         return false
     }

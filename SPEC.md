@@ -42,10 +42,10 @@ Per-harness command surface (all ten names, bodies use only `$ARGUMENTS`):
 | Harness | Location | How the user types it |
 |---|---|---|
 | Claude Code | skills inside the plugin: `plugins/claude/skills/<name>/SKILL.md` (`disable-model-invocation: true`) | menu shows `/harness-summit:sj`; typing bare `/sj args` also runs it (probes/claude.md K2) |
-| Codex | `~/.codex/skills/<name>/SKILL.md` | `$sj`, `$summit-join` … (no custom slash commands exist in 0.162.1; probes/codex.md C3) |
+| Codex | `$CODEX_HOME/skills/<name>/SKILL.md` (default `~/.codex`) | `$sj`, `$summit-join` … (no custom slash commands exist in 0.162.1; probes/codex.md C3) |
 | pi | `~/.pi/agent/prompts/<name>.md` | `/sj` |
 | OMP | `~/.omp/agent/commands/<name>.md` | `/sj` |
-| OpenCode | `~/.config/opencode/commands/<name>.md` | `/sj` |
+| OpenCode | `<config dir>/commands/<name>.md` (`$OPENCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/opencode`, default `~/.config/opencode`) | `/sj` |
 
 Command bodies name the tool by its short name plus server ("call the `summit_join` tool of the
 harness-summit MCP server"). Never hard-code the full prefixed name: each harness prefixes
@@ -101,10 +101,16 @@ Rules:
   differs from the parent pid is logged and ignored. A `CLAUDE_CODE_SHELL_PREFIX` wrapper puts another
   process between claude and the hook; the session is then recorded under the wrapper's pid and the
   server reports `SUMMIT_NO_HOST_KEY` (named in its message).
-- A signal harness call without a session id fails with `SUMMIT_NO_HOST_KEY` and says why: Claude
-  "the harness-summit plugin hooks did not run"; pi "SUMMIT_SESSION_ID is not set: the pi extension
-  registers this server; remove any harness-summit entry from ~/.pi/agent/mcp.json"; OMP "the OMP
-  extension did not run (it needs an interactive session)".
+- A signal harness call without a session id fails with `SUMMIT_NO_HOST_KEY`, says why and names the
+  fix. The text is `NO_SESSION` in `src/core/hostKey.ts`, built from the fix steps in `src/core/fixText.ts`
+  (each step its own command, never joined with `&&`, which Windows PowerShell 5.1 rejects). Claude: the
+  plugin hooks did not run, or a wrapper (`CLAUDE_CODE_SHELL_PREFIX`, or a node shim such as Volta) started
+  the hooks and the server under different parents; with a shim, remove the public plugin and use the npm
+  route (`npm i -g`, then `install --harness claude`, which writes the absolute node path); otherwise add
+  the public plugin or use the npm route. pi: `SUMMIT_SESSION_ID` is not set because the pi extension did
+  not run; fix with the npm route and remove any harness-summit entry from `~/.pi/agent/mcp.json`. OMP: the
+  OMP extension did not run (it writes `.sessions/omp-<pid>.json` only in an interactive session); fix
+  with the npm route. Each ends with a restart of the harness.
 - Codex and OpenCode send no id on `initialize` or `tools/list`; the host key is known only inside
   a `tools/call`. A call without the expected `_meta` key fails with `SUMMIT_NO_HOST_KEY`.
 - Identity file: `<root>/.hosts/<hostKey>.json` = `{ uuid, groupKey, harness, hostKey, joinedAt }`.
@@ -146,6 +152,7 @@ temp dir and never touch the real root.
   .sessions/<harness>-<pid>.json # { sessionId, at }: the session a claude or omp process runs now (section 3)
   .alive/<hostKey>.json        # heartbeat: its mtime is the last beat of the serving server (section 7)
   .wake/<hostKey>.signal       # wake signal for claude/pi/omp sessions (section 6)
+  .logs/<date>.log             # JSON-line logs
   <groupKey>/
     members.json               # { "version": 1, "members": { "<name>": "<uuid>" } }
     members.lock               # exclusive lock while members.json is rewritten (owner line, lease, section 5)
@@ -445,10 +452,10 @@ claude-session-start`, `hook claude-file-changed`, `notice --host-key <key>`, `i
 | Harness | Writes |
 |---|---|
 | Claude Code | a generated marketplace in `~/.local/share/harness-summit/claude-marketplace/` (`.claude-plugin/marketplace.json` plus the plugin in `claude/`: hooks (SessionStart, UserPromptSubmit, FileChanged; exec form), `.mcp.json`, skills, rendered with absolute paths); activation with `claude plugin marketplace add <that dir>` and `claude plugin install harness-summit@harness-summit --scope user`. The repo's `plugins/claude/` is the dev plugin for `claude --plugin-dir` (it starts bare `node`) |
-| Codex | a marked block in `~/.codex/config.toml`: `[mcp_servers.harness-summit]` with `args = [..., "--harness", "codex"]`, `[mcp_servers.harness-summit.env]`, and `[mcp_servers.harness-summit.tools.<tool>] approval_mode = "approve"` for each summit tool; skills in `~/.codex/skills/`. Install parses the file as TOML first and refuses (writes nothing) when it does not parse or already defines `mcp_servers.harness-summit` outside the block in any form |
+| Codex | a marked block in `$CODEX_HOME/config.toml` (`codexDir`, `src/install/homes.ts`: `$CODEX_HOME` when set and non-empty, else `~/.codex`; see the env rule below): `[mcp_servers.harness-summit]` with `args = [..., "--harness", "codex"]`, `[mcp_servers.harness-summit.env]`, and `[mcp_servers.harness-summit.tools.<tool>] approval_mode = "approve"` for each summit tool; skills in `$CODEX_HOME/skills/` (Codex 0.162.1 reads user skills there as a deprecated root, and in `~/.agents/skills`). Install parses the file as TOML first and refuses (writes nothing) when it does not parse or already defines `mcp_servers.harness-summit` outside the block in any form |
 | pi | no `mcp.json` entry: the extension `~/.pi/agent/extensions/harness-summit.ts` registers the server on every session start (section 3), with the launch install rendered into it (`INJECTED_MCP`: absolute node, CLI, harness CLI env). An entry an older install wrote in `~/.pi/agent/mcp.json` is retired (removed by install and by uninstall), because one of the same name would win over the extension's. Prompts in `~/.pi/agent/prompts/` |
 | OMP | `mcpServers.harness-summit` in `~/.omp/agent/mcp.json`; the same extension in `~/.omp/agent/extensions/`; commands in `~/.omp/agent/commands/` |
-| OpenCode | `opencode mcp add --global [--env K=V]... harness-summit -- <node> <cli> mcp --harness opencode` (the file is JSONC with comments: do not rewrite it by hand). Observed with 2.0.24 in a temp HOME: it writes `mcp.servers.harness-summit` = `{ type: "local", command: [...], environment: {...} }` into `~/.config/opencode/opencode.json` when that exists, else `opencode.jsonc` when that exists, else a new `opencode.json`; it keeps comments but re-indents the `mcp.servers` entries; a second run replaces the entry. Commands in `~/.config/opencode/commands/` |
+| OpenCode | `opencode mcp add --global [--env K=V]... harness-summit -- <node> <cli> mcp --harness opencode` (the file is JSONC with comments: do not rewrite it by hand). Observed with 2.0.24 in a temp HOME: it writes `mcp.servers.harness-summit` = `{ type: "local", command: [...], environment: {...} }` into the first of `opencode.json`, `opencode.jsonc`, `.opencode/opencode.json`, `.opencode/opencode.jsonc` in OpenCode's config dir (`opencodeDir`: `$OPENCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/opencode`, default `~/.config/opencode`) that is a file, else a new `opencode.json` (`OPENCODE_CONFIG_FILES`, from the 2.0.26 source); it keeps comments but re-indents the `mcp.servers` entries; a second run replaces the entry. Commands in `commands/` of the same dir |
 
 - Every file edit: back up once to `<file>.harness-summit.bak`, merge only the harness-summit keys,
   stay idempotent. `uninstall` removes exactly what `install` added: a parent object install created
@@ -460,10 +467,97 @@ claude-session-start`, `hook claude-file-changed`, `notice --host-key <key>`, `i
   spawns node directly, with no shell, on every OS (Claude Code hooks docs, "Exec form and shell form"),
   so the hook's parent is the claude process, and the hook keys its session by that parent pid
   (section 3). The exec form follows the docs and the 2.1.296 binary; a live run on a Claude session is
-  still to do on every OS. The repo's dev plugin (`plugins/claude`, for `claude --plugin-dir`) starts the
-  bare name `node`: dev only, never installed.
+  still to do on every OS. The Claude plugin has three launch forms (`src/install/launch.ts`), all
+  rendered by the same hooks and server code (`claudeHooks`, `mcpLaunch` in `src/install/render.ts`):
+  install (absolute node, absolute CLI); the repo's dev plugin (`plugins/claude`, for `claude
+  --plugin-dir`: bare `node`, `${CLAUDE_PLUGIN_ROOT}/../../dist/cli.js`, dev only); and the public npm
+  plugin (bare `node`, `${CLAUDE_PLUGIN_ROOT}/dist/cli.js`).
+- Public Claude plugin: the repo-root `.claude-plugin/marketplace.json` (`/plugin marketplace add
+  anthonyleung-dev/harness-summit`) lists one plugin with an `npm` source (`harness-summit` at the
+  package.json version). The npm package carries the repo-root `.claude-plugin/plugin.json`, which
+  declares the MCP server and the hooks inline (the repo root has no `.mcp.json`) and points `skills` at
+  `plugins/claude/skills`. Its bare `node` is the one exception to the absolute-node rule: Claude Code
+  copies the package into its plugin cache, so no absolute path is known at build time. The public
+  marketplace and an install's local marketplace have the same name; a user removes one before adding
+  the other. `install --harness claude` reads `claude plugin marketplace list --json` first and stops
+  with `SUMMIT_INSTALL_CONFLICT` (naming `/plugin uninstall` and `/plugin marketplace remove`) when a
+  marketplace of that name comes from another source, because `marketplace add` under a taken name
+  exits 0 without adding ours. When the list cannot be read, install goes on as before. `doctor` runs
+  no harness CLI, so it reports only install's own Claude route (`route=install`, else `route=unknown`).
+  A node shim that starts node as a child (Volta) breaks the bare-`node` route (the hook and the server
+  get different parent pids); the `SUMMIT_NO_HOST_KEY` message sends those users to the install route.
+- The CLI is ONE self-contained ESM file, `dist/cli.js`, bundled by esbuild (`scripts/bundle.ts`). The
+  package has no runtime dependencies, so `bin` and the public plugin run with no dependency install at
+  all (Claude Code installs no `node_modules` for an npm plugin without a lockfile, and npm never
+  publishes one). The tarball ships `dist/cli.js` and `dist/THIRD_PARTY_LICENSES.txt` (the license text
+  of every bundled package) and no other `dist` file. The CLI finds its package root by walking up to the
+  package.json named `harness-summit` (`packageRoot`), never by a fixed depth.
+- `npm run build` (`gen-plugin`) writes every generated file: `plugins/claude/`, the two repo-root
+  `.claude-plugin/` files and `server.json` (MCP Registry entry). All carry the package.json version.
+  CI and the release job run the build and fail on any changed or untracked file
+  (`npm run check:generated`), so a stale or missing copy never ships. `gen-plugin` fully owns
+  `plugins/claude/`: it deletes every file there that the render does not produce (hand-written files
+  need an entry in `KEEP_IN_OWNED`, none today). Outside it, it deletes only paths on `ROOT_GENERATED`.
+  It refuses with `SUMMIT_BAD_INPUT`, before any write, unless the package root holds `src/cli.ts` and
+  `.git` (a source checkout); the published package has neither. USAGE does not list it. The build also fails when the
+  bundle loads a module that is not a Node built-in (`externalLoads`).
 - External commands that install runs get `HOME` and `USERPROFILE` set to `--home` (Windows programs
-  read `USERPROFILE`).
+  read `USERPROFILE`). When `--home` is not the real home (`os.homedir()`), every env var that moves a
+  harness CLI's config, data or cache location (`HOME_BOUND_ENV` in `src/install/homes.ts`) is pointed
+  below `--home` (`CLAUDE_CONFIG_DIR` = `<home>/.claude`, `CODEX_HOME`, the four `XDG_*_HOME`) or removed
+  (`CLAUDE_CODE_PLUGIN_CACHE_DIR`, `CLAUDE_CODE_PLUGIN_SEED_DIR`, `CLAUDE_CODE_PLUGIN_DIRS`,
+  `CLAUDE_CODE_DEBUG_LOGS_DIR`, `OPENCODE_CONFIG`, `OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG_CONTENT`,
+  `OPENCODE_TUI_CONFIG`, `PI_CODING_AGENT_DIR`, `PI_CODING_AGENT_SESSION_DIR`), so a temp install never
+  reaches the caller's real config. For the real home the caller's values pass through unchanged. Install's
+  own file writes follow the same rule, through one resolver in `src/install/homes.ts` that install, doctor
+  and uninstall all use: the Codex home (`codexDir`) is `$CODEX_HOME` for the real home when it is set and
+  non-empty, else `<home>/.codex`; the OpenCode config dir (`opencodeDir`) is, for the real home,
+  `$OPENCODE_CONFIG_DIR` when it is set and non-empty, else `$XDG_CONFIG_HOME/opencode` when that is set and
+  non-empty, else `<home>/.config/opencode` (OpenCode 2.0.26 reads its global config, and `opencode mcp add
+  --global` writes, there; the CLI swaps its config dir for `OPENCODE_CONFIG_DIR` when that is truthy). For any other `--home` they are always
+  `<home>/.codex` and `<home>/.config/opencode`, the values the CLIs get. A relative value is refused with
+  `SUMMIT_BAD_INPUT` (the harness resolves it against its own working directory, so it names a different
+  dir per launch). Only the harness that uses the dir is resolved, so the refusal blocks install and
+  uninstall of that harness alone, and `doctor` prints it on that harness's line only; the codex and
+  opencode lines name the dir doctor checked (`dir=`). The other writes use `--home` paths (`~/.pi/agent`,
+  `~/.omp/agent`) and do not read `PI_CODING_AGENT_DIR`; install writes nothing under the Claude config dir
+  itself. A Codex home or OpenCode config dir an earlier install recorded (a dir a recorded
+  `config.toml` or OpenCode config file edit fits) that is no longer the current one is cleaned like a pruned
+  harness dir: its recorded skills or commands are pruned and its registration is retired, by install and
+  by uninstall.
+- Upgrade: after a new release, `install` again. Claude Code reads a plugin of a local directory
+  marketplace from that folder (`claude plugin list --json` shows `readFromFolder`), so rewritten files take
+  effect at the next session start or `/reload-plugins`. It also keeps a cache copy and a recorded version
+  from `plugin install`, so install adds a sync action: when the previous install ran `claude plugin
+  install` and either a file of the local marketplace changed in this run or the state's `synced` record
+  differs from the package version, it runs `claude plugin update harness-summit@harness-summit --scope
+  user` and records the version; after a version change that brings the version `claude plugin list`
+  shows in line (with the same version Claude Code prints "nothing to update" and exits 0). A fresh install
+  records the version without the command. A failed update warns and install goes on: the plugin in use is
+  already the new one, only the shown version stays old; the record is dropped so the next run retries.
+  When the update says the plugin is not installed or not found (removed by hand), the records of what is
+  gone are dropped instead, so the next install adds it again. Uninstall never undoes an update; it only
+  drops the record.
+- A path install owns whose type the user changed (a file where install made a dir, a dir where it wrote a
+  file, or a file in place of a dir above it) is the user's: install, prune and uninstall
+  (`keepInTheWay`, `src/install/inTheWay.ts`) leave it, report `keep <path> (user's <file|dir> in the way)`
+  once per run for the shallowest blocking path, forget its record and go on with every other action;
+  install exits 0. Uninstall also goes on past an action that fails: it reports `fail <target>: <code>:
+  <message>`, keeps that record (a re-run retries it), runs every later action and the cleanup, and the CLI
+  exits 1, because something install owns is still there. A dir install created that now holds a user's
+  path stays recorded until it is empty.
+- Plugin removed by hand: when the state records the plugin, every install run first reads `claude plugin
+  list --json` (read-only); when the plugin is not listed, it drops the records of the marketplace and
+  plugin commands and runs them again in the same run (both are idempotent). So a re-run with no change
+  runs this one read-only claude command and nothing else. An unreadable list prints a `warn` line and
+  changes nothing; so does an unreadable marketplace list in the name check.
+- Install never leaves a file it no longer renders: a file the state records under a harness's owned dirs
+  (`ownedDirsFor`: the Claude marketplace; each command dir; the pi/OMP extensions dir) that the current
+  plan does not write is pruned, with uninstall's rule: removed when unchanged since install wrote it (and
+  the dirs install created for it, when empty), else kept, reported (`keep ... (changed since install)`)
+  and no longer recorded. A file the state does not record is never touched. Only the harnesses of this
+  run are pruned. `--dry-run` reports `remove` lines and deletes nothing; uninstall prunes them as well.
+  The rule (`staleOwned`, `src/core/prune.ts`) is the one gen-plugin uses.
 - `--help`, no command, `--dry-run` and `doctor` never create the summit root (no log file).
 - Command files for all harnesses are generated from ONE template set in the repo.
 - The build NEVER runs `install` against the real home. Tests use `--home <tmpdir>`. The owner runs

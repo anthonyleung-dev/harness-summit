@@ -11,18 +11,15 @@ import { setJsonKey } from '../../src/install/edits.js'
 import { opencodeConfigPath, runInstall, runUninstall } from '../../src/install/install.js'
 import { sha, stateFile } from '../../src/install/state.js'
 import { errorCode, recordingExec, seededHome, snapshot } from '../helpers/env.js'
+import { claudeExec, testLaunch } from '../helpers/install.js'
 
-const launch = {
-    node: '/usr/bin/node',
-    cli: '/opt/harness-summit/dist/cli.js',
-    env: { SUMMIT_CODEX_BIN: '/opt/bin/codex', SUMMIT_OPENCODE_BIN: '/opt/bin/opencode' },
-}
+const launch = testLaunch({ env: { SUMMIT_CODEX_BIN: '/opt/bin/codex', SUMMIT_OPENCODE_BIN: '/opt/bin/opencode' } })
 
 describe('install that fails half way', () => {
     it('saves what it did, so uninstall reverses it and a re-run does not repeat the claude commands', async () => {
         const home = seededHome()
         const original = snapshot(home)
-        const exec = recordingExec()
+        const exec = claudeExec()
         const opts = { harnesses: [...HARNESSES], home, dryRun: false, exec, launch }
         const conflict = path.join(home, '.omp/agent/extensions/harness-summit.ts')
         fs.mkdirSync(path.dirname(conflict), { recursive: true })
@@ -37,7 +34,14 @@ describe('install that fails half way', () => {
 
         fs.rmSync(conflict)
         await runInstall(opts)
-        expect(exec.calls.filter((c) => c.req.cmd === 'claude')).toHaveLength(2)
+        // One marketplace check (first run only), then add and install once each; the re-run checks that the
+        // plugin is still installed.
+        expect(exec.calls.filter((c) => c.req.cmd === 'claude').map((c) => c.req.args.slice(0, 3))).toEqual([
+            ['plugin', 'marketplace', 'list'],
+            ['plugin', 'marketplace', 'add'],
+            ['plugin', 'install', 'harness-summit@harness-summit'],
+            ['plugin', 'list', '--json'],
+        ])
 
         await runUninstall(opts)
         fs.mkdirSync(path.dirname(conflict), { recursive: true })
@@ -68,7 +72,7 @@ describe('install that fails half way', () => {
 })
 
 describe('OpenCode registration', () => {
-    it('targets opencode.json when it exists or when no config exists, else opencode.jsonc', async () => {
+    it('targets the first config file mcp add would use (opencode.json, opencode.jsonc, .opencode/...)', async () => {
         const home = seededHome()
         const dir = path.join(home, '.config/opencode')
         expect(await opencodeConfigPath(home)).toBe(path.join(dir, 'opencode.jsonc'))
@@ -77,6 +81,14 @@ describe('OpenCode registration', () => {
         fs.rmSync(path.join(dir, 'opencode.json'))
         fs.rmSync(path.join(dir, 'opencode.jsonc'))
         expect(await opencodeConfigPath(home)).toBe(path.join(dir, 'opencode.json'))
+        // Then .opencode/opencode.json, then .opencode/opencode.jsonc; a dir of that name is not a file.
+        const nested = path.join(dir, '.opencode')
+        fs.mkdirSync(path.join(nested, 'opencode.json'), { recursive: true })
+        fs.writeFileSync(path.join(nested, 'opencode.jsonc'), '{}\n')
+        expect(await opencodeConfigPath(home)).toBe(path.join(nested, 'opencode.jsonc'))
+        fs.rmSync(path.join(nested, 'opencode.json'), { recursive: true })
+        fs.writeFileSync(path.join(nested, 'opencode.json'), '{}\n')
+        expect(await opencodeConfigPath(home)).toBe(path.join(nested, 'opencode.json'))
     })
 
     it('passes the harness CLI paths as --env, and every other registration carries them as env', async () => {

@@ -2,8 +2,9 @@
 // follows the harness SESSION, not a process, so a resumed session gets its agent back:
 // claude/pi/omp: `<harness>-<sessionId>`; codex: `codex-<threadId>`; opencode: `opencode-<sessionID>`.
 import { summitError } from './errors.js'
+import { npmInstallFix, PUBLIC_PLUGIN_ADD, PUBLIC_PLUGIN_REMOVAL } from './fixText.js'
 import { log } from './log.js'
-import type { Harness } from './schemas.js'
+import { SUMMIT_NAME, type Harness } from './schemas.js'
 
 export type RequestMeta = Record<string, unknown> | undefined
 
@@ -22,11 +23,11 @@ export const SIGNAL_HARNESSES: readonly Harness[] = ['claude', 'pi', 'omp']
 // (their server lives across `/clear` or `/new`). pi gets it in the server's env instead (PI_SESSION_ENV).
 export const SESSION_FILE_HARNESSES: readonly Harness[] = ['claude', 'omp']
 
-// Why a signal harness call has no session id, in words a user can act on.
+// Why a signal harness call has no session id, and the fix, in words a user can act on.
 const NO_SESSION: Record<string, string> = {
-    claude: 'no Claude Code session recorded for this server: the harness-summit plugin hooks did not run (SessionStart writes .sessions/claude-<pid>.json), or a CLAUDE_CODE_SHELL_PREFIX wrapper started them under another parent; run /resume or restart Claude Code with the harness-summit plugin enabled',
-    pi: `${PI_SESSION_ENV} is not set: the harness-summit pi extension registers this server; remove any harness-summit entry from ~/.pi/agent/mcp.json and restart pi`,
-    omp: 'no OMP session recorded for this server: the harness-summit OMP extension did not run (it writes .sessions/omp-<pid>.json in an interactive session)',
+    claude: `no Claude Code session recorded for this server: the ${SUMMIT_NAME} plugin hooks did not run (SessionStart writes .sessions/claude-<pid>.json), or a wrapper started the hooks and this server under different parent processes (CLAUDE_CODE_SHELL_PREFIX, or a node shim such as Volta that starts node as a child process). Fix when node on your PATH is such a shim: the /plugin route starts \`node\` from PATH and cannot work for you; ${PUBLIC_PLUGIN_REMOVAL}; then ${npmInstallFix('claude')} (it writes the absolute path of node), then restart Claude Code. Fix otherwise: add the plugin with ${PUBLIC_PLUGIN_ADD}, or ${npmInstallFix('claude')}; remove any ${SUMMIT_NAME} server added with claude mcp add; then restart Claude Code.`,
+    pi: `${PI_SESSION_ENV} is not set: the ${SUMMIT_NAME} pi extension registers this server, and it did not run. Fix: ${npmInstallFix('pi')}, remove any ${SUMMIT_NAME} entry from ~/.pi/agent/mcp.json, then restart pi.`,
+    omp: `no OMP session recorded for this server: the ${SUMMIT_NAME} OMP extension did not run (it writes .sessions/omp-<pid>.json only in an interactive session). Fix: ${npmInstallFix('omp')}, then restart OMP in an interactive session.`,
 }
 
 // Purpose: the one host key format: `<harness>-<id>` (the id is validated by the callers).

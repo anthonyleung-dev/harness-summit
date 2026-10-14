@@ -1,0 +1,71 @@
+{
+    "name": "harness-summit",
+    "version": "1.0.2",
+    "description": "harness-summit: message other coding-agent sessions on this machine",
+    "mcpServers": {
+        "harness-summit": {
+            "command": "node",
+            "args": [
+                "${CLAUDE_PLUGIN_ROOT}/dist/cli.js",
+                "mcp",
+                "--harness",
+                "claude"
+            ]
+        }
+    },
+    "hooks": {
+        "SessionStart": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "node",
+                        "args": [
+                            "${CLAUDE_PLUGIN_ROOT}/dist/cli.js",
+                            "hook",
+                            "claude-session-start"
+                        ],
+                        "timeout": 20
+                    }
+                ]
+            }
+        ],
+        "UserPromptSubmit": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "node",
+                        "args": [
+                            "${CLAUDE_PLUGIN_ROOT}/dist/cli.js",
+                            "hook",
+                            "claude-prompt-submit"
+                        ],
+                        "timeout": 10
+                    }
+                ]
+            }
+        ],
+        "FileChanged": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "node",
+                        "args": [
+                            "${CLAUDE_PLUGIN_ROOT}/dist/cli.js",
+                            "hook",
+                            "claude-file-changed"
+                        ],
+                        "asyncRewake": true,
+                        "timeout": 20
+                    }
+                ]
+            }
+        ]
+    },
+    "skills": "./plugins/claude/skills",
+    "author": {
+        "name": "anthonyleung-dev"
+    }
+}

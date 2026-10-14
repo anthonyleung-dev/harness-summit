@@ -90,9 +90,21 @@ export function normalizeRootPath(p: string, platform: NodeJS.Platform = process
 // normalizeRootPath, and on Windows compared ignoring letter case in the whole path (NTFS ignores it;
 // Claude reports the changed file with backslashes there).
 export function samePath(a: string, b: string, platform: NodeJS.Platform = process.platform): boolean {
-    const p = platform === 'win32' ? path.win32 : path.posix
-    const norm = (x: string) => normalizeRootPath(p.resolve(x), platform)
-    return platform === 'win32' ? norm(a).toLowerCase() === norm(b).toLowerCase() : norm(a) === norm(b)
+    return comparablePath(a, platform) === comparablePath(b, platform)
+}
+
+// Purpose: the form samePath and isInsideDir compare: resolved, normalizeRootPath, lower case on Windows.
+function comparablePath(x: string, platform: NodeJS.Platform): string {
+    const n = normalizeRootPath((platform === 'win32' ? path.win32 : path.posix).resolve(x), platform)
+    return platform === 'win32' ? n.toLowerCase() : n
+}
+
+// Purpose: tell whether `p` lies strictly below directory `dir`, with samePath's rules (install uses it to
+// find the files it owns under a harness directory).
+export function isInsideDir(p: string, dir: string, platform: NodeJS.Platform = process.platform): boolean {
+    const x = platform === 'win32' ? path.win32 : path.posix
+    const rel = x.relative(comparablePath(dir, platform), comparablePath(p, platform))
+    return rel !== '' && rel !== '..' && !rel.startsWith(`..${x.sep}`) && !x.isAbsolute(rel)
 }
 
 // Purpose: the canonical path of an existing directory: its realpath as the OS reports it

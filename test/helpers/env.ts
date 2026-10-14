@@ -11,10 +11,22 @@ import { sleep } from '../../src/core/freshness.js'
 import { usesSessionFile, type RequestMeta } from '../../src/core/hostKey.js'
 import type { Harness } from '../../src/core/schemas.js'
 import { writeSessionSync } from '../../src/core/sessions.js'
+import { packageRoot } from '../../src/core/version.js'
 import type { CallContext } from '../../src/flows/context.js'
+import { builtCli } from '../../src/install/launch.js'
 
-export const REPO = path.resolve(import.meta.dirname, '..', '..')
-export const CLI = path.join(REPO, 'dist', 'cli.js')
+export const REPO = packageRoot()
+export const CLI = builtCli()
+
+// Purpose: every file under `dir` whose name matches `ext` (default: .ts), recursively, as absolute paths,
+// without node_modules; a missing dir has none. The one source-tree walker of the guard tests.
+export function sourceFiles(dir: string, ext: RegExp = /\.ts$/): string[] {
+    if (!fs.existsSync(dir)) return []
+    return fs
+        .readdirSync(dir, { recursive: true, encoding: 'utf8' })
+        .filter((f) => ext.test(f) && !f.split(path.sep).includes('node_modules'))
+        .map((f) => path.join(dir, f))
+}
 
 // Purpose: a fresh temp dir under the OS temp dir.
 export function tmpDir(prefix: string): string {
@@ -32,10 +44,11 @@ export interface RecordingExec extends Exec {
     calls: { req: ExecRequest; timeoutMs: number }[]
 }
 
-// Purpose: an Exec stub that records every request and runs nothing. `capture` answers with `reply`
-// after `delayMs` (a slow `codex queue`); with `fail`, it rejects as a spawn failure would.
+// Purpose: an Exec stub that records every request and runs nothing. `capture` answers with `reply` (or
+// with `reply(req)`, an answer per command) after `delayMs` (a slow `codex queue`); with `fail`, it
+// rejects as a spawn failure would.
 export function recordingExec(
-    reply: CaptureResult = { code: 0, stdout: '', stderr: '' },
+    reply: CaptureResult | ((req: ExecRequest) => CaptureResult) = { code: 0, stdout: '', stderr: '' },
     fail = false,
     delayMs = 0,
 ): RecordingExec {
@@ -46,7 +59,7 @@ export function recordingExec(
             calls.push({ req, timeoutMs })
             if (delayMs > 0) await sleep(delayMs)
             if (fail) throw new Error('spawn failed (stub)')
-            return reply
+            return typeof reply === 'function' ? reply(req) : reply
         },
     }
 }
@@ -155,21 +168,21 @@ const PARENT_JS = [
     "child.on('exit', (code) => process.exit(code ?? 1))",
 ].join('\n')
 
-// Purpose: command + argv that start the built CLI; with `viaParent`, through PARENT_JS so the CLI's
-// parent is that Node process (not the test runner).
-export function cliCommand(args: string[], viaParent = false): [string, string[]] {
-    const argv = [CLI, ...args]
+// Purpose: command + argv that start the built CLI (or the bundle at `cli`, e.g. a copy in a fake package);
+// with `viaParent`, through PARENT_JS so the CLI's parent is that Node process (not the test runner).
+export function cliCommand(args: string[], viaParent = false, cli: string = CLI): [string, string[]] {
+    const argv = [cli, ...args]
     if (!viaParent) return [process.execPath, argv]
     return [process.execPath, ['-e', PARENT_JS, process.execPath, ...argv]]
 }
 
-// Purpose: run the built CLI once with stdin and env; `viaParent` puts a Node parent between us and the
-// CLI, so the CLI's ppid is that parent's pid (returned as `parentPid`).
+// Purpose: run the built CLI (or the bundle at `opts.cli`) once with stdin and env; `viaParent` puts a Node
+// parent between us and the CLI, so the CLI's ppid is that parent's pid (returned as `parentPid`).
 export async function runCli(
     args: string[],
-    opts: { env?: NodeJS.ProcessEnv; stdin?: string; viaParent?: boolean } = {},
+    opts: { env?: NodeJS.ProcessEnv; stdin?: string; viaParent?: boolean; cli?: string } = {},
 ): Promise<CliRun & { parentPid?: number }> {
-    const [cmd, argv] = cliCommand(args, opts.viaParent)
+    const [cmd, argv] = cliCommand(args, opts.viaParent, opts.cli)
     const child = spawn(cmd, argv, { env: { ...process.env, ...opts.env } })
     let stdout = ''
     let stderr = ''
@@ -187,6 +200,33 @@ export function seededHome(): string {
     const home = tmpDir('home')
     fs.cpSync(FIXTURE_HOME, home, { recursive: true })
     return home
+}
+
+// Purpose: set (a string) or remove (undefined) process env vars for a test. Returns the undo.
+export function setEnv(vars: Record<string, string | undefined>): () => void {
+    const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]))
+    const apply = (vs: Record<string, string | undefined>) => {
+        for (const [k, v] of Object.entries(vs)) {
+            if (v === undefined) delete process.env[k]
+            else process.env[k] = v
+        }
+    }
+    apply(vars)
+    return () => apply(saved)
+}
+
+// Purpose: make `home` the real home (os.homedir() reads HOME on POSIX, USERPROFILE on Windows), so code that
+// treats the real home differently (homes.ts) can be tested in a temp dir. The vars that move a config dir of
+// the real home (CODEX_HOME, XDG_CONFIG_HOME, OPENCODE_CONFIG_DIR) are unset, so a developer's own values never
+// steer a test's writes out of the temp dir; a test sets them after this call. Returns the undo.
+export function fakeRealHome(home: string): () => void {
+    return setEnv({
+        HOME: home,
+        USERPROFILE: home,
+        CODEX_HOME: undefined,
+        XDG_CONFIG_HOME: undefined,
+        OPENCODE_CONFIG_DIR: undefined,
+    })
 }
 
 // Purpose: every file (path -> content) and directory under `dir`, for byte-exact comparisons.

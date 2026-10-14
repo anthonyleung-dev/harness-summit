@@ -4,6 +4,9 @@ import { z } from 'zod'
 // The product name. It is the MCP server name, the registration key in every harness config, the
 // Claude plugin name and the marketplace name (one door for the string).
 export const SUMMIT_NAME = 'harness-summit'
+// The GitHub repository (`owner/repo`): the public Claude marketplace (`/plugin marketplace add`) and the
+// MCP Registry namespace. A unit test checks it against package.json `repository.url`.
+export const SUMMIT_REPO = 'anthonyleung-dev/harness-summit'
 
 export const HARNESSES = ['claude', 'codex', 'pi', 'omp', 'opencode'] as const
 export const HarnessSchema = z.enum(HARNESSES)

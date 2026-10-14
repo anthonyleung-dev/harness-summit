@@ -48,6 +48,34 @@ live run.
 
 ## Quick start
 
+### Claude Code only
+
+Node.js 22 or later must be on `PATH`. In Claude Code:
+
+```text
+/plugin marketplace add anthonyleung-dev/harness-summit
+/plugin install harness-summit@harness-summit
+```
+
+Then restart Claude Code. This needs no global npm install.
+
+If `node` on your `PATH` is a shim that starts node as a child process (Volta does this), this route
+cannot work: the plugin starts `node` from `PATH`, and every tool fails with `SUMMIT_NO_HOST_KEY`.
+Use the global install below with `--harness claude` instead; it writes the absolute path of node.
+
+Claude Code keeps one marketplace per name, and both routes name theirs `harness-summit`:
+
+- You ran `harness-summit install --harness claude` before: run
+  `harness-summit uninstall --harness claude` first, then add the plugin as above.
+- You added the plugin with `/plugin` before and now want the global install for Claude Code: in
+  Claude Code run `/plugin uninstall harness-summit@harness-summit`, then
+  `/plugin marketplace remove harness-summit`. `install` checks this and stops with these steps. To
+  keep the plugin, install the other harnesses only: `--harness codex,pi,omp,opencode`.
+
+### All harnesses
+
+Codex, OpenCode, pi and OMP need the global install:
+
 ```sh
 npm install -g harness-summit
 
@@ -55,6 +83,9 @@ harness-summit install --harness all --dry-run   # print the plan; writes nothin
 harness-summit install --harness all             # or: --harness claude,codex
 harness-summit doctor                            # check what is registered
 ```
+
+`doctor` shows the Claude Code route that `install` set up (`route=install`). It does not detect a
+`/plugin` install of the public plugin (`route=unknown`).
 
 Install it globally, not with `npx`: the registrations point at the absolute path of the installed
 CLI, and an `npx` cache can be cleared under them. To run from a checkout instead, see
@@ -172,14 +203,20 @@ You do not need to copy the mail rules: `summit_join` and every `summit_read` re
 
 ## What `install` changes
 
-| Harness     | Registration                                                                                         | Commands                                | Wake adapter                                |
-| ----------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------- | ------------------------------------------- |
-| Claude Code | a generated plugin in `~/.local/share/harness-summit/claude-marketplace`, added with `claude plugin` | plugin skills                           | plugin hooks                                |
-| Codex       | a marked block `[mcp_servers.harness-summit]` in `~/.codex/config.toml`, with tool approvals         | `~/.codex/skills/<name>/SKILL.md`       | none needed                                 |
-| OpenCode    | `opencode mcp add --global harness-summit ...`                                                       | `~/.config/opencode/commands/<name>.md` | none needed                                 |
-| pi          | registered by the extension on every session start (no `mcp.json` entry; an older one is removed)    | `~/.pi/agent/prompts/<name>.md`         | `~/.pi/agent/extensions/harness-summit.ts`  |
-| OMP         | `mcpServers.harness-summit` in `~/.omp/agent/mcp.json`                                               | `~/.omp/agent/commands/<name>.md`       | `~/.omp/agent/extensions/harness-summit.ts` |
+| Harness     | Registration                                                                                         | Commands                                       | Wake adapter                                |
+| ----------- | ---------------------------------------------------------------------------------------------------- | ---------------------------------------------- | ------------------------------------------- |
+| Claude Code | a generated plugin in `~/.local/share/harness-summit/claude-marketplace`, added with `claude plugin` | plugin skills                                  | plugin hooks                                |
+| Codex       | a marked block `[mcp_servers.harness-summit]` in `$CODEX_HOME/config.toml`, with tool approvals      | `$CODEX_HOME/skills/<name>/SKILL.md`           | none needed                                 |
+| OpenCode    | `opencode mcp add --global harness-summit ...`                                                       | `$XDG_CONFIG_HOME/opencode/commands/<name>.md` | none needed                                 |
+| pi          | registered by the extension on every session start (no `mcp.json` entry; an older one is removed)    | `~/.pi/agent/prompts/<name>.md`                | `~/.pi/agent/extensions/harness-summit.ts`  |
+| OMP         | `mcpServers.harness-summit` in `~/.omp/agent/mcp.json`                                               | `~/.omp/agent/commands/<name>.md`              | `~/.omp/agent/extensions/harness-summit.ts` |
 
+- `$CODEX_HOME` is `~/.codex` and `$XDG_CONFIG_HOME` is `~/.config` unless you set them; OpenCode uses
+  `$OPENCODE_CONFIG_DIR` instead of `$XDG_CONFIG_HOME/opencode` when you set it. Install, `doctor` and
+  `uninstall` read them (each must be an absolute path; a bad one blocks only Codex or only OpenCode).
+  After you change one, run `install` again: it moves that registration and its commands from the old dir to
+  the new one. With `--home <dir>` they ignore all three and use `<dir>/.codex` and `<dir>/.config`.
+- Install writes `~/.pi/agent` and `~/.omp/agent` and ignores `PI_CODING_AGENT_DIR`.
 - Install edits only the harness-summit keys. It backs up each edited file once, to
   `<file>.harness-summit.bak`, and records every step in
   `~/.local/share/harness-summit/install-state.json`.
@@ -189,25 +226,21 @@ You do not need to copy the mail rules: `summit_join` and every `summit_read` re
 - Registrations use absolute paths to `node` and to `dist/cli.js`. Run `install` again after you
   move the checkout, upgrade the package, or switch the Node.js version (for example with nvm).
 
+### Upgrading
+
+After `npm install -g harness-summit@latest`, run `harness-summit install` again with the same harnesses. It
+rewrites the generated files and removes the files it wrote earlier that the new version no longer has (a
+file you edited stays, and install says so). Claude Code reads the plugin from install's folder, so the new
+files load when you restart Claude Code or run `/reload-plugins`; install also runs `claude plugin update
+harness-summit@harness-summit` so `claude plugin list` shows the new version. A second run changes nothing:
+its only command is the read-only `claude plugin list --json`, and if you removed the plugin by hand
+(`/plugin uninstall`), that run adds it back.
+
 ## On-disk layout
 
-```text
-~/.harness-summit/
-  .hosts/<hostKey>.json          identity of one session
-  .sessions/<harness>-<pid>.json the session a Claude Code or OMP process runs now
-  .alive/<hostKey>.json          heartbeat: its server touches it every 2 s
-  .wake/<hostKey>.signal         wake signal for Claude Code, pi and OMP sessions
-  .logs/<date>.log               JSON-line logs
-  <groupKey>/
-    members.json                 name -> uuid map of the group
-    <uuid>/
-      agent.json                 the agent: name, harness, wake action, pid
-      <sender>.md                messages from one sender, append-only
-      .cursor.json               how far the agent has read
-```
-
-The group key is the md5 of the project root (the git top level, else the working directory, as its
-real path; on Windows with a lower-case drive letter), or the group name after `/sg`. Set `HARNESS_SUMMIT_HOME` to use another root.
+All state is plain files under `~/.harness-summit` (or `$HARNESS_SUMMIT_HOME`): a folder per group (md5
+of the project root, or the name after `/sg`) with a folder per agent and one append-only file per sender,
+plus identity, session, heartbeat, wake and log files. [SPEC.md section 4](SPEC.md#4-file-layout) lists them.
 
 ## Development
 
@@ -226,8 +259,25 @@ npm run format:check
 - Try a change without installing: `claude --plugin-dir plugins/claude`, or
   `pi -e adapters/pi-omp/harness-summit.ts` (the same file works for `omp -e`).
 - Tests set `HARNESS_SUMMIT_HOME` to a temp dir and run install only against a temp home.
-- Release: bump `version` in `package.json` (the only place it is written), commit, then push a tag
-  `v<version>`. The `release` workflow checks the tag, runs the tests and publishes to npm.
+- `npm run build` type-checks, then bundles the CLI with esbuild into one file, `dist/cli.js`, plus
+  `dist/THIRD_PARTY_LICENSES.txt`. The published package has no runtime dependencies: the libraries are
+  inside the bundle, so `npm i -g harness-summit` and the Claude plugin install nothing else.
+- `npm run build` writes every generated file from `package.json`: `plugins/claude/`, the public
+  plugin and marketplace in `.claude-plugin/`, and `server.json`. Commit them with the change. CI fails
+  when a committed copy differs from the build output. The build deletes any file in `plugins/claude/`
+  that the templates no longer produce, so do not put hand-written files there. The build step
+  (`gen-plugin`) runs only in a git checkout with `src/`; an installed package refuses it.
+- Release, through a branch and a PR (never a direct push to `main`): on a branch, bump `version` in
+  `package.json` (the only place you edit), run `npm run build`, commit, push the branch and open a PR.
+  Right after the PR is merged, tag the merge commit and push the tag: `git fetch origin`, then
+  `git tag v<version> <merge sha>`, then `git push origin v<version>`. Tag at once: from the merge until npm
+  has the version, the public marketplace on `main` names a version npm lacks, so `/plugin install` fails.
+  The tag starts the `release` workflow: it checks that the tag matches `package.json`, runs the audit, the
+  tests and the generated-files check, publishes to npm, then lists the release in the
+  [MCP Registry](https://registry.modelcontextprotocol.io) as `io.github.anthonyleung-dev/harness-summit`
+  (GitHub OIDC, no token; `server.json` `name` must equal `mcpName`, a unit test checks it). If `publish`
+  fails for a cause outside the code, re-run the job; else fix it in a new PR that also bumps `version` to
+  the next patch, and release that: never move a pushed tag, and npm never takes a version number twice.
 - [SPEC.md](SPEC.md) is the design. [CLAUDE.md](CLAUDE.md) lists the harness facts that are easy to
   get wrong.
 
@@ -237,8 +287,10 @@ src/server/                 MCP server and tool schemas (Zod)
 src/flows/                  one flow per tool
 src/core/                   files, identity, messages, notice, wake, locks, logging
 src/install/                install, uninstall, doctor, command templates
+scripts/bundle.ts           esbuild bundle of the CLI and its third-party license notices
 adapters/pi-omp/            the pi and OMP extension
 plugins/claude/             dev Claude Code plugin, generated by `npm run build`
+.claude-plugin/             public Claude plugin and marketplace, generated by `npm run build`
 test/                       unit and integration tests
 ```
 

@@ -64,7 +64,15 @@ describe('CLI arguments', () => {
     it('logs to the summit root only for commands that own it', () => {
         const yes = ['mcp', 'hook', 'notice', 'install', 'uninstall']
         for (const cmd of yes) expect(logsToFile(parseCliArgs([cmd]))).toBe(true)
-        for (const argv of [[], ['--help'], ['doctor'], ['gen-plugin'], ['install', '--dry-run'], ['mcp', '-h']]) {
+        for (const argv of [
+            [],
+            ['--help'],
+            ['--version'],
+            ['doctor'],
+            ['gen-plugin'],
+            ['install', '--dry-run'],
+            ['mcp', '-h'],
+        ]) {
             expect(logsToFile(parseCliArgs(argv)), argv.join(' ')).toBe(false)
         }
     })

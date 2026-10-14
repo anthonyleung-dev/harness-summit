@@ -37,7 +37,12 @@ const removeFolder = step<WithHost>('removeFolder', async (ctx) => {
     return ctx
 })
 
-// Step: remove the host record last, so a failure before it can be retried by the same host.
+// Step: remove the host record last. A failure in leaveMap or removeFolder leaves the record and the folder
+// (rm deletes the folder itself last), so the same host can retry bye. A failure HERE, after the folder is
+// gone, cannot be retried: the retry's requireHostStep finds no folder in any group (locateHost returns
+// null) and fails with SUMMIT_NOT_JOINED, so the record stays as an orphan. It is harmless: every call
+// answers SUMMIT_NOT_JOINED, as after a full bye, and the next summit_join (loadHost is null too) mints a
+// new agent and overwrites the record.
 const removeHost = step<WithHost>('removeHost', async (ctx) => {
     await deleteHost(ctx.call.root, need(ctx.hostKey, 'hostKey'))
     return ctx

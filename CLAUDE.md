@@ -13,20 +13,34 @@ development notes, which stay outside this repository (see `.gitignore`).
 - `@modelcontextprotocol/sdk` 1.32.1. Use `registerTool`, because `tool()` is deprecated. The stdio
   import is `@modelcontextprotocol/sdk/server/stdio.js`.
 - `zod` 4.6.5 validates every tool input and output, every file read and the CLI arguments.
-- `smol-toml` 1.9.1 parses `~/.codex/config.toml` before install edits it (it never writes TOML).
+- `smol-toml` 1.9.1 parses `$CODEX_HOME/config.toml` (default `~/.codex`) before install edits it (it never writes TOML).
 - `jsonc-parser` makes key-level edits in JSON and JSONC files. It is called without
   `formattingOptions` on purpose: with them, it reformats whole lines and changes foreign keys.
 - `typescript` 7.0.2 (the native `tsc`), `vitest` 5.0.3, `tsx` 4.23.15, `prettier` 3.9.9 with
   `@trivago/prettier-plugin-sort-imports` 6.0.2 (it reads the `importOrder` keys of `.prettierrc`).
   TS 7 works with this setup: vitest and tsx strip types themselves and never call `tsc`.
+- The CLI ships as ONE self-contained ESM file, `dist/cli.js`, bundled by `esbuild` 0.28.2 (pinned
+  exactly) in `scripts/bundle.ts`. Not minified (readable stack traces). The package has NO runtime
+  `dependencies`: the four libraries above are devDependencies that esbuild bundles. Why: npm 12 neither
+  reads nor publishes `npm-shrinkwrap.json`, npm never publishes `package-lock.json`, and Claude Code
+  installs plugin deps only with a lockfile, so an npm-sourced plugin gets no `node_modules`. The bundle
+  needs `mainFields: ['module', 'main']` (jsonc-parser's UMD `main` breaks). The build fails when the
+  bundle loads any module that is not a Node built-in (`externalLoads` in `scripts/bundle.ts`; ajv's
+  `require("ajv/...")` strings are generated code text, not calls). The build also writes `dist/THIRD_PARTY_LICENSES.txt` from the esbuild
+  metafile: every bundled package's license text; a package without a license file fails the build.
+  CI and the release job audit devDependencies too (`npm audit --audit-level=high`), because they are what
+  ships. Both workflows end the build with `npm run check:generated` (`scripts/check-generated.ts`): it
+  fails on a changed OR an untracked file after the build.
+- The package root is found by name, not by depth (`packageRoot` in `src/core/version.ts`): the bundle
+  sits one level down (`dist/cli.js`), the sources two (`src/core`).
 - vitest 5 could not be installed with npm 10.9.2 (arborist error `Cannot read properties of null
 (reading 'edgesOut')`). It was installed with `npx npm@latest install -D vitest@latest`.
 
 ## Commands
 
 ```sh
-npm run build       # tsc -> dist/, then regenerate plugins/claude from the templates
-npm run typecheck   # tsc --noEmit over src, test, adapters
+npm run build       # tsc type gate (no emit), esbuild bundle -> dist/cli.js + notices, then gen-plugin
+npm run typecheck   # tsc --noEmit over src, scripts, test, adapters
 npm test            # build + vitest (unit + integration)
 npx prettier --check .
 npm run dev -- <args>   # run the CLI from source with tsx
@@ -85,6 +99,11 @@ npm run dev -- <args>   # run the CLI from source with tsx
 - Claude hooks:
     - Exec form in hooks.json (`command` = node, `args` = [cli, "hook", sub]): no shell on any OS, so
       the hook's ppid is claude. Follows the Claude Code docs; not yet run live on any OS.
+    - Three launch forms (`src/install/launch.ts`), one renderer (`claudeHooks`, `mcpLaunch`): install
+      (absolute node + CLI), the dev plugin `plugins/claude` (`${CLAUDE_PLUGIN_ROOT}/../../dist/cli.js`)
+      and the public npm plugin, the repo-root `.claude-plugin/plugin.json` (`${CLAUDE_PLUGIN_ROOT}/dist/cli.js`,
+      server and hooks inline; the repo root must not get a `.mcp.json`). `npm run build` writes all
+      generated files (also `server.json`); CI fails on `npm run check:generated` after the build.
     - SessionStart records the session (pid = its parent pid; `$CLAUDE_PID` only confirms) and arms
       `.wake/claude-<sessionId>.signal`; FileChanged reads the session file to find the current signal.
     - FileChanged has no matcher. It sets `asyncRewake: true` and `timeout: 20`. It exits 0 when
@@ -111,9 +130,11 @@ npm run dev -- <args>   # run the CLI from source with tsx
   `SUMMIT_GUIDANCE` (neutral, the `guidance` field of `summit_join` and `summit_read`). Both come from
   `src/core/notice.ts`; their text is an owner decision (FIXES.md rounds 2 and 3). Do not reword them.
   A reply needs no answer: `summit_read` gives `replyHint` only on a record without `replyTo`.
-- Never write the OpenCode JSONC by hand. Install uses `opencode mcp add --global`. It writes
-  `opencode.json` if it exists, else `opencode.jsonc` if it exists, else a new `opencode.json`
-  (verified in a temp HOME; see FIXES-LOG.md m11).
+- Never write the OpenCode JSONC by hand. Install uses `opencode mcp add --global`. In OpenCode's config
+  dir (`opencodeDir`: on the real home `$OPENCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/opencode`, else
+  `~/.config/opencode`) it writes the first file of `OPENCODE_CONFIG_FILES` (homes.ts: `opencode.json`,
+  `opencode.jsonc`, `.opencode/opencode.json`, `.opencode/opencode.jsonc`), else a new `opencode.json`
+  (verified in a temp HOME, FIXES-LOG.md m11; the `.opencode/` pair read from the 2.0.26 source).
 - The MCP server never writes logs to stdout. stdout is the protocol.
 
 ## One function, one door
@@ -121,45 +142,66 @@ npm run dev -- <args>   # run the CLI from source with tsx
 Before you write anything, search for an existing helper and extend it with a parameter. Each of
 these has exactly one implementation:
 
-| What                | Where                                                              |
-| ------------------- | ------------------------------------------------------------------ |
-| Notice text         | `src/core/notice.ts`                                               |
-| Signal protocol     | `src/core/signal.ts`, with the path in `src/core/paths.ts`         |
-| Host-key resolution | `src/core/hostKey.ts`                                              |
-| Wake argv           | `src/core/wake.ts`                                                 |
-| External CLI spawns | `src/core/exec.ts` (`spawnPlan`, `cliBin`, `findOnPath`)           |
-| cmd.exe quoting     | `src/core/winCmd.ts`                                               |
-| Lock files          | `src/core/lock.ts` (`withLock`, `formatLockOwner`, `isTaken`)      |
-| Freshness, sleep    | `src/core/freshness.ts` (`isStaleMtime`, `confirmGone`, `sleep`)   |
-| Busy errno (Win)    | `isBusyErrno` in `src/core/fsx.ts`                                 |
-| Name lookup         | `lookupName` in `src/core/members.ts` (exact, else one case match) |
-| Name claims, undo   | `src/flows/claim.ts` (`claimName`, `restoreHolder`)                |
-| Case matches        | `nameKeys` in `src/core/members.ts` (exact key first)              |
-| Names, device names | `NameSchema`, `isReservedName`, `isSenderLabel` in `schemas.ts`    |
-| Same file path      | `samePath` in `src/core/project.ts`                                |
-| Session renew       | `renewSession` in `src/core/sessions.ts` (never switches)          |
-| File modes          | `DIR_MODE`, `FILE_MODE` in `src/core/paths.ts`                     |
-| Lock lease refresh  | `src/core/lease.ts`                                                |
-| Rename (retrying)   | `renameRetry` in `src/core/fsx.ts`                                 |
-| agent.json update   | `updateAgent` in `src/core/agents.ts`                              |
-| Group lock          | `lockGroup` (`lockGroups` for several) in `src/core/members.ts`    |
-| Heartbeat           | `src/core/heartbeat.ts`, `isAlive` in `src/core/agents.ts`         |
-| Project root key    | `normalizeRootPath` in `src/core/project.ts`                       |
-| Session harnesses   | `SIGNAL_HARNESSES`, `SESSION_FILE_HARNESSES` in `hostKey.ts`       |
-| Session files       | `src/core/sessions.ts` (`writeSession(Sync)`, `readSession`)       |
-| Host key format     | `joinHostKey` in `src/core/hostKey.ts`                             |
-| File read/write     | `src/core/fsx.ts` (`readTextFile`, `pathExists`, JSON)             |
-| CLI arguments       | `src/cli/args.ts`                                                  |
-| Product name        | `SUMMIT_NAME` in `src/core/schemas.ts`                             |
-| Uuid / name schema  | `UuidSchema`, `NameSchema` in `src/core/schemas.ts`                |
-| Command bodies      | `src/install/templates.ts`                                         |
-| Test helpers        | `test/helpers/` (`env.ts`, `state.ts`, `mcp.ts`)                   |
+| What                | Where                                                                  |
+| ------------------- | ---------------------------------------------------------------------- |
+| Notice text         | `src/core/notice.ts`                                                   |
+| Signal protocol     | `src/core/signal.ts`, with the path in `src/core/paths.ts`             |
+| Host-key resolution | `src/core/hostKey.ts`                                                  |
+| Wake argv           | `src/core/wake.ts`                                                     |
+| External CLI spawns | `src/core/exec.ts` (`spawnPlan`, `cliBin`, `findOnPath`)               |
+| cmd.exe quoting     | `src/core/winCmd.ts`                                                   |
+| Lock files          | `src/core/lock.ts` (`withLock`, `formatLockOwner`, `isTaken`)          |
+| Freshness, sleep    | `src/core/freshness.ts` (`isStaleMtime`, `confirmGone`, `sleep`)       |
+| Busy errno (Win)    | `isBusyErrno` in `src/core/fsx.ts`                                     |
+| Name lookup         | `lookupName` in `src/core/members.ts` (exact, else one case match)     |
+| Name claims, undo   | `src/flows/claim.ts` (`claimName`, `restoreHolder`)                    |
+| Case matches        | `nameKeys` in `src/core/members.ts` (exact key first)                  |
+| Names, device names | `NameSchema`, `isReservedName`, `isSenderLabel` in `schemas.ts`        |
+| Same file path      | `samePath` in `src/core/project.ts`                                    |
+| Path inside a dir   | `isInsideDir` in `src/core/project.ts`                                 |
+| Stale-file rule     | `staleOwned` in `src/core/prune.ts` (gen-plugin and install)           |
+| Harness CLI env     | `execEnv`, `HOME_BOUND_ENV` in `src/install/homes.ts`                  |
+| Movable config dirs | `codexDir`, `opencodeDir` in `src/install/homes.ts` (`movableDir`)     |
+| Test env vars       | `setEnv`, `fakeRealHome` in `test/helpers/env.ts`                      |
+| Session renew       | `renewSession` in `src/core/sessions.ts` (never switches)              |
+| File modes          | `DIR_MODE`, `FILE_MODE` in `src/core/paths.ts`                         |
+| Lock lease refresh  | `src/core/lease.ts`                                                    |
+| Rename (retrying)   | `renameRetry` in `src/core/fsx.ts`                                     |
+| agent.json update   | `updateAgent` in `src/core/agents.ts`                                  |
+| Group lock          | `lockGroup` (`lockGroups` for several) in `src/core/members.ts`        |
+| Heartbeat           | `src/core/heartbeat.ts`, `isAlive` in `src/core/agents.ts`             |
+| Project root key    | `normalizeRootPath` in `src/core/project.ts`                           |
+| Session harnesses   | `SIGNAL_HARNESSES`, `SESSION_FILE_HARNESSES` in `hostKey.ts`           |
+| Session files       | `src/core/sessions.ts` (`writeSession(Sync)`, `readSession`)           |
+| Host key format     | `joinHostKey` in `src/core/hostKey.ts`                                 |
+| File read/write     | `src/core/fsx.ts` (`readTextFile`, `pathExists`, `pathKind`, JSON)     |
+| User path in way    | `inTheWay`, `keepInTheWay` in `src/install/inTheWay.ts`                |
+| CLI arguments       | `src/cli/args.ts`                                                      |
+| Product name        | `SUMMIT_NAME` in `src/core/schemas.ts`                                 |
+| Package root, ver.  | `packageRoot`, `SUMMIT_VERSION` in `src/core/version.ts`               |
+| package.json read   | `readPackageManifest` in `src/core/version.ts` (Zod)                   |
+| Bundle path         | `BUNDLE_FILE` in `src/core/version.ts` (`builtCli` in launch.ts)       |
+| User fix commands   | `src/core/fixText.ts` (no `&&`: PowerShell 5.1)                        |
+| Script entry guard  | `runIfMain` in `scripts/main.ts`                                       |
+| Uuid / name schema  | `UuidSchema`, `NameSchema` in `src/core/schemas.ts`                    |
+| Command bodies      | `src/install/templates.ts`                                             |
+| Generated files     | `src/cli/genPlugin.ts` (`OWNED_DIRS`, `ROOT_GENERATED`)                |
+| Test helpers        | `test/helpers/` (`env.ts`, `state.ts`, `mcp.ts`, `install.ts`)         |
+| Test launch, exec   | `TEST_LAUNCH`, `testLaunch`, `claudeExec` in `test/helpers/install.ts` |
+| Source-tree walk    | `sourceFiles` in `test/helpers/env.ts` (test-doors.test.ts guards)     |
 
 The pi/OMP extension is a separate door, and this is the written reason: the installed copy lives
 alone in the harness's extension dir. So it gets the host key, the signal path and the notice from
 the CLI, and it checks the CLI output by hand (`parseArmed`), because it cannot import Zod there. It
 has no copy of the spawn door either: it starts only the node `.exe` with the CLI, and every other
-command runs inside the CLI through `src/core/exec.ts`.
+command runs inside the CLI through `src/core/exec.ts`. Its dev fallback (`cliLaunch` when nothing was injected) finds
+`dist/cli.js` two levels above itself; it is the one package-root walk outside `version.ts`, for the same
+reason (version.test.ts names it as the only exemption).
+
+`scripts/check-generated.ts` starts `git` with `execFileSync`, outside `src/core/exec.ts`, and this is the
+written reason: it is a build script that runs under tsx before and without `dist/`, and the door logs
+through `src/core/log.ts` into the summit root, which a build must never write (a CI runner or a
+developer's `~/.harness-summit`). It runs only `git status` with a fixed argv, never a harness CLI.
 
 Test helpers are portable: no `sleep`, `true`, `sh` or procfs. `callFor(root, harness, { session,
 hostPid })` records the session as the host side would (session file or pi env); host pids come from

@@ -7,14 +7,15 @@ import { describe, expect, it } from 'vitest'
 import { HARNESSES } from '../../src/core/schemas.js'
 import { BACKUP_SUFFIX } from '../../src/install/actions.js'
 import { runInstall, runUninstall } from '../../src/install/install.js'
-import { recordingExec, runCli, seededHome, snapshot, tmpDir } from '../helpers/env.js'
+import { runCli, seededHome, snapshot, tmpDir } from '../helpers/env.js'
+import { claudeExec, LIST_PLUGINS, TEST_LAUNCH } from '../helpers/install.js'
 
-const launch = { node: '/usr/bin/node', cli: '/opt/harness-summit/dist/cli.js' }
+const launch = TEST_LAUNCH
 
 describe('install / uninstall (in-process, stubbed exec)', () => {
     const home = seededHome()
     const original = snapshot(home)
-    const exec = recordingExec()
+    const exec = claudeExec()
     const opts = { harnesses: [...HARNESSES], home, dryRun: false, exec, launch }
     const read = (rel: string) => fs.readFileSync(path.join(home, rel), 'utf8')
     // The two list commands, at the path each of the five harnesses reads them from.
@@ -96,6 +97,7 @@ describe('install / uninstall (in-process, stubbed exec)', () => {
         })
 
         expect(exec.calls.map((c) => [c.req.cmd, ...c.req.args])).toEqual([
+            ['claude', 'plugin', 'marketplace', 'list', '--json'],
             ['claude', 'plugin', 'marketplace', 'add', plugin],
             ['claude', 'plugin', 'install', 'harness-summit@harness-summit', '--scope', 'user'],
             [
@@ -115,11 +117,11 @@ describe('install / uninstall (in-process, stubbed exec)', () => {
         expect(exec.calls.every((c) => c.req.env?.HOME === home)).toBe(true)
     })
 
-    it('is idempotent: a second install changes nothing and runs nothing', async () => {
+    it('is idempotent: a second install changes nothing and runs only the read-only plugin check', async () => {
         const after1 = snapshot(home)
         const lines = await runInstall(opts)
         expect(snapshot(home)).toEqual(after1)
-        expect(exec.calls).toHaveLength(3)
+        expect(exec.calls.slice(4).map((c) => [c.req.cmd, ...c.req.args])).toEqual([LIST_PLUGINS])
         expect(lines.every((l) => l.startsWith('ok '))).toBe(true)
     })
 
@@ -127,7 +129,7 @@ describe('install / uninstall (in-process, stubbed exec)', () => {
         await runUninstall(opts)
         expect(snapshot(home)).toEqual(original)
         for (const rel of listFiles) expect(fs.existsSync(path.join(home, rel))).toBe(false)
-        expect(exec.calls.slice(3).map((c) => [c.req.cmd, ...c.req.args])).toEqual([
+        expect(exec.calls.slice(5).map((c) => [c.req.cmd, ...c.req.args])).toEqual([
             ['claude', 'plugin', 'uninstall', 'harness-summit@harness-summit'],
             ['claude', 'plugin', 'marketplace', 'remove', 'harness-summit'],
         ])
