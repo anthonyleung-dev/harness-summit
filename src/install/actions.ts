@@ -12,6 +12,7 @@ import type { Exec, ExecRequest } from '../core/exec.js'
 import { pathExists, readTextFile } from '../core/fsx.js'
 import { log } from '../core/log.js'
 import { isInsideDir } from '../core/project.js'
+import { applyEdit, revertEdit } from './editAction.js'
 import { keepInTheWay } from './inTheWay.js'
 import { sha, type InstallState } from './state.js'
 import { applySync, forgetSync } from './sync.js'
@@ -119,43 +120,6 @@ async function applyFile(a: Extract<Action, { kind: 'file' }>, env: ActionEnv): 
     env.state.files[a.path] = sha(a.content)
 }
 
-// Purpose: tell whether `text` already holds what an edit writes: `apply` changes nothing, or `holds` says so.
-function holdsEdit(a: Extract<Action, { kind: 'edit' }>, text: string): boolean {
-    if (a.run) return a.holds?.(text) ?? true
-    return (a.apply ?? ((t: string) => t))(text) === text
-}
-
-// Purpose: edit a user file once-backed-up; a no-op when it still holds our last edit and that edit is still the
-// wanted one (a re-install after the launch changed edits again, SPEC §8).
-async function applyEdit(a: Extract<Action, { kind: 'edit' }>, env: ActionEnv): Promise<void> {
-    if (await keepInTheWay(a.path, 'file', env, () => delete env.state.edits[a.path])) return
-    const current = await readTextFile(a.path)
-    const text = current ?? ''
-    const rec = env.state.edits[a.path]
-    const ours = rec !== undefined && sha(text) === rec.postSha
-    if (ours && holdsEdit(a, text)) return env.report(`ok      ${a.path} (${a.what})`)
-    env.report(
-        `${a.run ? 'run    ' : 'edit   '} ${a.path} (${a.what})${a.run ? `: ${a.run.cmd} ${a.run.args.join(' ')}` : ''}`,
-    )
-    if (env.dryRun) return
-    // The backup holds only the user's file: a file that still holds our last edit is never backed up.
-    if (current !== null && !ours && !(await pathExists(a.path + BACKUP_SUFFIX)))
-        await fs.writeFile(a.path + BACKUP_SUFFIX, current)
-    // Recorded before a command runs too, so uninstall removes the dirs that command creates for its file.
-    await ensureParentDirs(a.path, env.state)
-    let next: string
-    if (a.run) {
-        await runChecked(a.run, env.exec)
-        next = (await readTextFile(a.path)) ?? ''
-    } else {
-        next = (a.apply ?? ((t: string) => t))(text)
-        await fs.writeFile(a.path, next)
-    }
-    // A file that still holds our last edit keeps its recorded pre-install state, so uninstall restores the backup.
-    const preSha = rec === undefined ? sha(text) : ours ? rec.preSha : sha(a.revert(text, null))
-    env.state.edits[a.path] = { existed: rec?.existed ?? current !== null, preSha, postSha: sha(next) }
-}
-
 // Purpose: run an external command once.
 async function applyExec(a: Extract<Action, { kind: 'exec' }>, env: ActionEnv): Promise<void> {
     if (env.state.execs[a.id]) return env.report(`ok      ${a.id}`)
@@ -197,31 +161,6 @@ export async function removeOwnedFile(file: string, env: ActionEnv): Promise<voi
         if (!env.dryRun && current !== null) await fs.rm(file, { force: true })
     }
     if (!env.dryRun) delete env.state.files[file]
-}
-
-// Purpose: undo an edit: restore the backup when nothing changed since install, else remove only our key.
-async function revertEdit(a: Extract<Action, { kind: 'edit' }>, env: ActionEnv): Promise<void> {
-    const rec = env.state.edits[a.path]
-    if (rec === undefined) return
-    if (await keepInTheWay(a.path, 'file', env, () => delete env.state.edits[a.path])) return
-    const current = await readTextFile(a.path)
-    const backup = await readTextFile(a.path + BACKUP_SUFFIX)
-    const untouched = current !== null && sha(current) === rec.postSha
-    if (untouched && !rec.existed) {
-        env.report(`remove  ${a.path} (created by install)`)
-        if (!env.dryRun) await fs.rm(a.path, { force: true })
-    } else if (untouched && backup !== null && sha(backup) === rec.preSha) {
-        env.report(`restore ${a.path} from ${a.path + BACKUP_SUFFIX}`)
-        if (!env.dryRun) {
-            await fs.writeFile(a.path, backup)
-            await fs.rm(a.path + BACKUP_SUFFIX, { force: true })
-        }
-    } else if (current !== null) {
-        env.report(`edit    ${a.path} (remove ${a.what}; changed since install, backup kept)`)
-        const original = backup ?? (rec.existed ? null : '')
-        if (!env.dryRun) await fs.writeFile(a.path, a.revert(current, original))
-    }
-    if (!env.dryRun) delete env.state.edits[a.path]
 }
 
 // Purpose: run the undo command of an external command that ran.

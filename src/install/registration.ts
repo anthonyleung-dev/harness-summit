@@ -17,20 +17,39 @@ const LaunchSchema = z.object({ command: z.string(), args: z.array(z.string()), 
 // What `opencode mcp add` writes (SPEC §8): the command and its args in one array, the env as `environment`.
 const OpencodeSchema = z.object({ command: z.array(z.string()).min(1), environment: EnvSchema.optional() })
 
+// Purpose: parse a registration text; a failure is rethrown with a short reason that names neither the file nor
+// a fix (doctor's line prints both once), the parser's error kept as its cause.
+function parsed<T>(what: string, parse: () => T): T {
+    try {
+        return parse()
+    } catch (err) {
+        throw new Error(`not valid ${what}`, { cause: err })
+    }
+}
+
 // Purpose: the raw server value of one harness's registration text (unvalidated; undefined when absent).
 function serverValue(harness: Harness, text: string, file: string): unknown {
     switch (harness) {
         case 'codex':
-            return getAt(parseTomlOrRefuse(text, file), CODEX_KEY)
+            return getAt(
+                parsed('TOML', () => parseTomlOrRefuse(text, file)),
+                CODEX_KEY,
+            )
         case 'opencode':
-            return getAt(parseJsonc(text, file), OPENCODE_KEY)
+            return getAt(
+                parsed('JSON', () => parseJsonc(text, file)),
+                OPENCODE_KEY,
+            )
         case 'pi': {
             const line = text.split('\n').find((l) => l.startsWith(MCP_PREFIX))
-            return line === undefined ? undefined : JSON.parse(line.slice(MCP_PREFIX.length))
+            return line === undefined ? undefined : parsed('JSON', () => JSON.parse(line.slice(MCP_PREFIX.length)))
         }
         case 'claude':
         case 'omp':
-            return getAt(parseJsonc(text, file), JSON_KEY)
+            return getAt(
+                parsed('JSON', () => parseJsonc(text, file)),
+                JSON_KEY,
+            )
     }
 }
 
@@ -60,7 +79,12 @@ export function readLaunch(harness: Harness, text: string, file: string): Launch
         const { command, environment } = OpencodeSchema.parse(value)
         return { launch: { command: command[0]!, args: command.slice(1), env: environment }, problem: null }
     } catch (err) {
-        log('warn', 'readLaunch', 'registration not readable', { harness, file, error: String(err) })
+        log('warn', 'readLaunch', 'registration not readable', {
+            harness,
+            file,
+            error: String(err),
+            cause: err instanceof Error ? String(err.cause) : undefined,
+        })
         return { launch: null, problem: problemOf(err) }
     }
 }

@@ -185,6 +185,7 @@ these has exactly one implementation:
 | Script entry guard  | `runIfMain` in `scripts/main.ts`                                               |
 | Uuid / name schema  | `UuidSchema`, `NameSchema` in `src/core/schemas.ts`                            |
 | Command bodies      | `src/install/templates.ts`                                                     |
+| Edit action, undo   | `applyEdit`, `revertEdit`, `isBlankConfig` in `src/install/editAction.ts`      |
 | Registration read   | `readLaunch`, `sameLaunch` in `src/install/registration.ts`                    |
 | Registration keys   | `SERVER_KEY`, `JSON_KEY`, `CODEX_KEY`, `OPENCODE_KEY` in `src/install/keys.ts` |
 | Injected MCP line   | `MCP_PREFIX` in `src/install/launch.ts` (test-doors.test.ts guards)            |

@@ -158,7 +158,11 @@ describe('doctor names a registration it cannot read', () => {
             expect(lines.find((l) => l.startsWith(`${h} `))).toMatch(/registered=no /)
             const warn = lines.find((l) => l.startsWith(`warn      ${h} cannot read the registration`))
             expect(warn).toContain(path.join(home, rel))
+            expect(warn!.split(path.join(home, rel))).toHaveLength(2) // the path once
         }
+        expect(lines.find((l) => l.startsWith('warn      codex'))).toBe(
+            `warn      codex cannot read the registration in ${path.join(home, CODEX)}: not valid TOML; fix the file, then run \`harness-summit install --harness codex\``,
+        )
         const cli = await runCli(['doctor', '--home', home], { env: { HARNESS_SUMMIT_HOME: tmpDir('root') } })
         expect(cli.code).toBe(0)
         expect(cli.stdout).toContain('warn      codex cannot read the registration')
