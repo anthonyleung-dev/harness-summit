@@ -31,8 +31,8 @@ describe('readLaunch', () => {
     it('no registration: launch null and no problem; a broken or misshapen one: launch null and the reason', () => {
         expect(readLaunch('omp', '{"mcpServers": {}}', 'f')).toEqual({ launch: null, problem: null })
         expect(readLaunch('codex', 'a = 1\n', 'f')).toEqual({ launch: null, problem: null })
-        expect(readLaunch('omp', '{"mcpServers": ', 'f').problem).toBe('cannot parse f')
-        expect(readLaunch('codex', 'a = [', 'f').problem).toBe('f is not valid TOML; fix it first')
+        expect(readLaunch('omp', '{"mcpServers": ', 'f').problem).toBe('not valid JSON')
+        expect(readLaunch('codex', 'a = [', 'f').problem).toBe('not valid TOML')
         expect(readLaunch('pi', renderExtension('omp', launch), 'f')).toEqual({
             launch: null,
             problem: 'the extension holds no injected MCP launch',

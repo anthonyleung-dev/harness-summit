@@ -224,7 +224,8 @@ You do not need to copy the mail rules: `summit_join` and every `summit_read` re
   `~/.local/share/harness-summit/install-state.json`.
 - A second run changes nothing. An install that fails half way can still be uninstalled.
 - `uninstall` restores a file byte for byte when you did not edit it after install. When you did, it
-  removes only the harness-summit keys.
+  removes only the harness-summit keys. A config file that install created is deleted only when nothing of
+  yours is in it; a key you added there stays, also after a re-install.
 - Registrations use absolute paths to `node` and to `dist/cli.js`. Run `install` again after you
   move the checkout, upgrade the package, switch from a checkout to the npm package, or switch the Node.js
   version (for example with nvm). That run points every registration at the `node` and CLI that run it,

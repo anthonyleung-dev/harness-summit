@@ -464,8 +464,13 @@ claude-session-start`, `hook claude-file-changed`, `notice --host-key <key>`, `i
   `environment` (`readLaunch`, `sameLaunch` in `src/install/registration.ts`). So a re-install after the
   launch changed (another CLI path or node) edits or runs again. Such a re-edit keeps the recorded
   pre-install state and writes no backup: a backup only ever holds the user's file from before install's
-  first edit (none when install created the file). So uninstall restores the user's original bytes, or
-  removes a file install created, and leaves no backup behind. The parent dirs of an edited file are
+  first edit, never our own edit and never a file install created (there was no user file before it). So
+  uninstall restores the user's original bytes and leaves no backup behind. A file install created is
+  undone by its content, not by its sha history (a re-install records a new sha over whatever the user
+  added since, so "unchanged since install" does not mean "nothing of the user's"): uninstall removes our
+  key (and the parent objects install created that are now empty); when only whitespace or an empty `{}`
+  is left, the file goes, else it stays with the user's content (`isBlankConfig`,
+  `src/install/editAction.ts`; a comment counts as content). The parent dirs of an edited file are
   recorded before the edit, also before an external command that creates the file, so uninstall removes
   the ones install's run created. `uninstall` removes exactly what `install` added: a parent object install created
   goes too when it is empty; a key the user already removed is no error. `--dry-run` prints the plan.
