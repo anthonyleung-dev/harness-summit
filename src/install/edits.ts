@@ -1,6 +1,6 @@
 // Text-level edits of user config files that keep every foreign byte: a marked TOML block (Codex)
 // and a single JSON/JSONC key (pi, OMP, OpenCode removal) through jsonc-parser.
-import { applyEdits, modify, parse, type ParseError } from 'jsonc-parser'
+import { applyEdits, createScanner, modify, parse, SyntaxKind, type ParseError } from 'jsonc-parser'
 import { parse as parseToml } from 'smol-toml'
 
 import { summitError } from '../core/errors.js'
@@ -93,15 +93,45 @@ export function getAt(value: unknown, keyPath: string[]): unknown {
     return cur
 }
 
+// Purpose: the comments of a JSONC text, in order (install never writes one, so each is the user's).
+function jsonComments(text: string): string[] {
+    const scanner = createScanner(text, false)
+    const found: string[] = []
+    for (let kind = scanner.scan(); kind !== SyntaxKind.EOF; kind = scanner.scan()) {
+        if (kind === SyntaxKind.LineCommentTrivia || kind === SyntaxKind.BlockCommentTrivia) {
+            found.push(text.slice(scanner.getTokenOffset(), scanner.getTokenOffset() + scanner.getTokenLength()))
+        }
+    }
+    return found
+}
+
+// Purpose: the comments of `before` that `after` no longer has (a multiset difference).
+function lostComments(before: string, after: string): string[] {
+    const left = jsonComments(after)
+    return jsonComments(before).filter((c) => {
+        const at = left.indexOf(c)
+        if (at >= 0) left.splice(at, 1)
+        return at < 0
+    })
+}
+
 // Purpose: set (or with `undefined`, remove) one key, changing nothing else in the text. Removing a
-// key that is not there (its parent included) returns the text unchanged (REVIEW m5).
+// key that is not there (its parent included) returns the text unchanged (REVIEW m5). A removal never drops
+// a user's comment: jsonc-parser removes the comments inside the removed range too, so each one lost is put back
+// where the key was, one per line.
 export function setJsonKey(text: string, keyPath: string[], value: unknown, file: string): string {
     const current = parseJsonc(text, file)
     if (value === undefined && getAt(current, keyPath) === undefined) return text
     const base = text === '' ? '{}\n' : text
     // No formattingOptions on purpose: jsonc-parser would reformat the whole line around the edit,
     // which rewrites foreign keys in a one-line file.
-    return applyEdits(base, modify(base, keyPath, value, {}))
+    const edits = modify(base, keyPath, value, {})
+    const next = applyEdits(base, edits)
+    const lost = value === undefined && edits.length === 1 ? lostComments(base, next) : []
+    if (lost.length === 0) return next
+    const at = edits[0]!.offset + edits[0]!.content.length
+    log('info', 'setJsonKey', 'kept user comments of a removed key', { file, comments: lost.length })
+    return next.slice(0, at) + `\n${lost.map((c) => `${c}\n`).join('')}` + next.slice(at)
 }
 
 // Purpose: remove one key, then each parent object that is now empty and that did not exist in

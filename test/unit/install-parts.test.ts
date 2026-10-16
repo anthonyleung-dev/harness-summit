@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 import { JOIN_INSTRUCTION, SUMMIT_GUIDANCE } from '../../src/core/notice.js'
 import { HARNESSES } from '../../src/core/schemas.js'
+import { isBlankConfig } from '../../src/install/editAction.js'
 import { removeJsonKey, removeTomlBlock, setJsonKey, tomlBlock, upsertTomlBlock } from '../../src/install/edits.js'
 import { JSON_KEY, OPENCODE_KEY } from '../../src/install/keys.js'
 import { codexTables } from '../../src/install/plan.js'
@@ -194,5 +195,14 @@ describe('command templates', () => {
         ])
         expect(hooks.SessionStart[0].matcher).toBeUndefined()
         expect(JSON.stringify(hooks)).not.toMatch(/rewake(Message|Summary)/)
+    })
+})
+
+describe('isBlankConfig', () => {
+    it('blank: nothing, whitespace, an empty object; not blank: a comment or a key', () => {
+        for (const t of ['', '\n', ' \t\r\n', '{}', '{}\n', '{ }', '{\n}\n']) expect(isBlankConfig(t)).toBe(true)
+        for (const t of ['// note\n', '{ // note\n}', '/* x */{}', '{"a": 1}', 'a = 1\n', '# toml note\n']) {
+            expect(isBlankConfig(t)).toBe(false)
+        }
     })
 })
