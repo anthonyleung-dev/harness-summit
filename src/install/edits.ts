@@ -28,7 +28,7 @@ export function tomlBlock(body: string): string {
 
 // Purpose: parse TOML text, or fail with SUMMIT_INSTALL_CONFLICT (install never writes a file it
 // cannot read, and never leaves one Codex cannot read).
-function parseTomlOrRefuse(text: string, what: string): Record<string, unknown> {
+export function parseTomlOrRefuse(text: string, what: string): Record<string, unknown> {
     try {
         return parseToml(text) as Record<string, unknown>
     } catch (err) {

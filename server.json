@@ -8,13 +8,13 @@
         "source": "github"
     },
     "websiteUrl": "https://github.com/anthonyleung-dev/harness-summit#readme",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "packages": [
         {
             "registryType": "npm",
             "registryBaseUrl": "https://registry.npmjs.org",
             "identifier": "harness-summit",
-            "version": "1.0.2",
+            "version": "1.0.3",
             "transport": {
                 "type": "stdio"
             },

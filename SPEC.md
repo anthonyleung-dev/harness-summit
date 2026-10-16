@@ -458,7 +458,12 @@ claude-session-start`, `hook claude-file-changed`, `notice --host-key <key>`, `i
 | OpenCode | `opencode mcp add --global [--env K=V]... harness-summit -- <node> <cli> mcp --harness opencode` (the file is JSONC with comments: do not rewrite it by hand). Observed with 2.0.24 in a temp HOME: it writes `mcp.servers.harness-summit` = `{ type: "local", command: [...], environment: {...} }` into the first of `opencode.json`, `opencode.jsonc`, `.opencode/opencode.json`, `.opencode/opencode.jsonc` in OpenCode's config dir (`opencodeDir`: `$OPENCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/opencode`, default `~/.config/opencode`) that is a file, else a new `opencode.json` (`OPENCODE_CONFIG_FILES`, from the 2.0.26 source); it keeps comments but re-indents the `mcp.servers` entries; a second run replaces the entry. Commands in `commands/` of the same dir |
 
 - Every file edit: back up once to `<file>.harness-summit.bak`, merge only the harness-summit keys,
-  stay idempotent. `uninstall` removes exactly what `install` added: a parent object install created
+  stay idempotent. An edit is skipped (`ok`) only when the file is unchanged since install's last edit AND
+  already holds what this run would write: an in-process edit (`apply`) changes nothing, and the OpenCode
+  command edit's `holds` finds `mcp.servers.harness-summit` with the wanted `command` array and
+  `environment` (`readLaunch`, `sameLaunch` in `src/install/registration.ts`). So a re-install after the
+  launch changed (another CLI path or node) edits or runs again. Such a re-edit keeps the recorded
+  pre-install state and the first backup, so uninstall still restores the user's original bytes. `uninstall` removes exactly what `install` added: a parent object install created
   goes too when it is empty; a key the user already removed is no error. `--dry-run` prints the plan.
 - The install state file is written after every action that changed it (write-ahead), so an install
   that fails half way can still be uninstalled, and a re-run does not repeat external commands that
@@ -486,6 +491,13 @@ claude-session-start`, `hook claude-file-changed`, `notice --host-key <key>`, `i
   no harness CLI, so it reports only install's own Claude route (`route=install`, else `route=unknown`).
   A node shim that starts node as a child (Volta) breaks the bare-`node` route (the hook and the server
   get different parent pids); the `SUMMIT_NO_HOST_KEY` message sends those users to the install route.
+- `doctor` reads what each registration starts (the Claude plugin's `.mcp.json`, the Codex block, the OMP
+  and OpenCode keys, the pi extension's `INJECTED_MCP`) and compares node, CLI and args with what `install`
+  would write now (`installLaunch`). For each that differs it prints a `warn` line after the harness line:
+  the harness, the node and CLI the registration starts (`(missing)` when that CLI file is gone), the
+  current ones, and the fix `harness-summit install --harness <harness>`. A warn, not a fail (exit 0): the
+  old CLI may still run, and only an install fixes it. The env (harness CLI paths) is not compared, because
+  doctor's PATH need not be install's.
 - The CLI is ONE self-contained ESM file, `dist/cli.js`, bundled by esbuild (`scripts/bundle.ts`). The
   package has no runtime dependencies, so `bin` and the public plugin run with no dependency install at
   all (Claude Code installs no `node_modules` for an npm plugin without a lockfile, and npm never

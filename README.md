@@ -85,7 +85,9 @@ harness-summit doctor                            # check what is registered
 ```
 
 `doctor` shows the Claude Code route that `install` set up (`route=install`). It does not detect a
-`/plugin` install of the public plugin (`route=unknown`).
+`/plugin` install of the public plugin (`route=unknown`). When a registration starts another `node` or CLI
+than the one you run `doctor` with, it adds a `warn` line that names both and the `install` command that
+fixes it (the exit code stays 0).
 
 Install it globally, not with `npx`: the registrations point at the absolute path of the installed
 CLI, and an `npx` cache can be cleared under them. To run from a checkout instead, see
@@ -224,7 +226,9 @@ You do not need to copy the mail rules: `summit_join` and every `summit_read` re
 - `uninstall` restores a file byte for byte when you did not edit it after install. When you did, it
   removes only the harness-summit keys.
 - Registrations use absolute paths to `node` and to `dist/cli.js`. Run `install` again after you
-  move the checkout, upgrade the package, or switch the Node.js version (for example with nvm).
+  move the checkout, upgrade the package, switch from a checkout to the npm package, or switch the Node.js
+  version (for example with nvm). That run points every registration at the `node` and CLI that run it,
+  also in a config file you did not touch since the last install (it prints `edit` or `run` for each).
 
 ### Upgrading
 

@@ -2,24 +2,21 @@
 // OpenCode 2.0.26 keeps its global config in $OPENCODE_CONFIG_DIR, else $XDG_CONFIG_HOME/opencode, and
 // `opencode mcp add --global` writes there. For the real home (a temp dir made the real home with fakeRealHome) install records the registration
 // there, writes the commands there, doctor reads there and uninstall removes there; for any other --home
-// nothing leaves --home. The stubbed `opencode` writes its key where the real one would (its env decides).
+// nothing leaves --home. The stubbed `opencode` (fakeOpencode) writes its key where the real one would (its env decides).
 import fs from 'node:fs'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import type { ExecRequest } from '../../src/core/exec.js'
 import { readTextFile } from '../../src/core/fsx.js'
 import { HARNESSES, type Harness } from '../../src/core/schemas.js'
 import { doctorReport } from '../../src/install/doctor.js'
-import { setJsonKey } from '../../src/install/edits.js'
 import { runInstall, runUninstall } from '../../src/install/install.js'
 import { renderCommands } from '../../src/install/render.js'
 import { loadState } from '../../src/install/state.js'
 import { errorCode, fakeRealHome, recordingExec, seededHome, setEnv, snapshot, tmpDir } from '../helpers/env.js'
-import { TEST_LAUNCH } from '../helpers/install.js'
+import { fakeOpencode, TEST_LAUNCH } from '../helpers/install.js'
 
 const COMMANDS = renderCommands('opencode').map((f) => f.rel)
-const KEY = ['mcp', 'servers', 'harness-summit']
 
 let undo: (() => void)[] = []
 afterEach(() => {
@@ -32,26 +29,6 @@ function realHome(xdg: string | undefined): string {
     const home = seededHome()
     undo.push(fakeRealHome(home), setEnv({ XDG_CONFIG_HOME: xdg }))
     return home
-}
-
-// Purpose: what `opencode mcp add --global` does, from the env install gives it (OpenCode 2.0.26, read from
-// the binary): the config dir is $OPENCODE_CONFIG_DIR when set, else $XDG_CONFIG_HOME/opencode, else
-// $HOME/.config/opencode; in it, the first of opencode.json, opencode.jsonc, .opencode/opencode.json and
-// .opencode/opencode.jsonc that is a file gets the key, else a new opencode.json.
-function fakeOpencode(req: ExecRequest) {
-    if (req.cmd === 'opencode') {
-        const env = req.env ?? {}
-        const dir =
-            env.OPENCODE_CONFIG_DIR ||
-            path.join(env.XDG_CONFIG_HOME || path.join(env.HOME ?? '', '.config'), 'opencode')
-        const candidates = ['opencode.json', 'opencode.jsonc', '.opencode/opencode.json', '.opencode/opencode.jsonc']
-        const files = candidates.map((c) => path.join(dir, c))
-        const file = files.find((f) => fs.existsSync(f) && fs.statSync(f).isFile()) ?? files[0]!
-        const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '{}\n'
-        fs.mkdirSync(path.dirname(file), { recursive: true })
-        fs.writeFileSync(file, setJsonKey(text, KEY, { type: 'local' }, file))
-    }
-    return { code: 0, stdout: '', stderr: '' }
 }
 
 // Purpose: run install or uninstall of `harnesses` with the fake opencode.

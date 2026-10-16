@@ -6,9 +6,20 @@ import { SUMMIT_NAME, SUMMIT_REPO } from './schemas.js'
 // The Claude plugin id of both marketplaces (the public one and the one install writes).
 export const PLUGIN_ID = `${SUMMIT_NAME}@${SUMMIT_NAME}`
 
+// Purpose: the install command for one harness.
+function installCommand(harness: string): string {
+    return `${SUMMIT_NAME} install --harness ${harness}`
+}
+
 // Purpose: the npm route for one harness, as two commands in order.
 export function npmInstallFix(harness: string): string {
-    return `run \`npm i -g ${SUMMIT_NAME}\`, then \`${SUMMIT_NAME} install --harness ${harness}\``
+    return `run \`npm i -g ${SUMMIT_NAME}\`, then \`${installCommand(harness)}\``
+}
+
+// Purpose: the fix for a registration that starts another node or CLI than the one running (doctor): install
+// again with the CLI the harness should start.
+export function reinstallFix(harness: string): string {
+    return `run \`${installCommand(harness)}\``
 }
 
 // The in-session steps that remove the public plugin and its marketplace (both named SUMMIT_NAME).

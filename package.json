@@ -1,6 +1,6 @@
 {
     "name": "harness-summit",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "mcpName": "io.github.anthonyleung-dev/harness-summit",
     "description": "Let Claude Code, Codex, OpenCode, pi and OMP sessions on one machine message each other and wake idle agents. An MCP server plus small per-harness adapters, all through plain files.",
     "keywords": [

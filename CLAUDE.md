@@ -185,6 +185,8 @@ these has exactly one implementation:
 | Script entry guard  | `runIfMain` in `scripts/main.ts`                                       |
 | Uuid / name schema  | `UuidSchema`, `NameSchema` in `src/core/schemas.ts`                    |
 | Command bodies      | `src/install/templates.ts`                                             |
+| Registration read   | `readLaunch`, `sameLaunch` in `src/install/registration.ts`            |
+| pi/OMP extension    | `extensionFile` in `src/install/plan.ts`                               |
 | Generated files     | `src/cli/genPlugin.ts` (`OWNED_DIRS`, `ROOT_GENERATED`)                |
 | Test helpers        | `test/helpers/` (`env.ts`, `state.ts`, `mcp.ts`, `install.ts`)         |
 | Test launch, exec   | `TEST_LAUNCH`, `testLaunch`, `claudeExec` in `test/helpers/install.ts` |

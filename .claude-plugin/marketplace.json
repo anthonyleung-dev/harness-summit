@@ -10,7 +10,7 @@
             "source": {
                 "source": "npm",
                 "package": "harness-summit",
-                "version": "1.0.2"
+                "version": "1.0.3"
             },
             "description": "harness-summit: message other coding-agent sessions on this machine"
         }
