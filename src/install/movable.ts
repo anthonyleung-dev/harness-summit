@@ -3,10 +3,10 @@
 import path from 'node:path'
 
 import { samePath } from '../core/project.js'
-import { SUMMIT_NAME } from '../core/schemas.js'
 import type { Action } from './actions.js'
 import { removeJsonKey, removeTomlBlock } from './edits.js'
 import { codexDir, OPENCODE_CONFIG_FILES, opencodeDir } from './homes.js'
+import { CODEX_KEY, OPENCODE_KEY } from './keys.js'
 import type { InstallState } from './state.js'
 
 // Codex's user config file in the Codex home (codexDir). No other harness registration is a config.toml, so
@@ -21,9 +21,6 @@ export const MOVABLE: Record<Movable, { files: readonly string[][]; commands: st
     opencode: { files: OPENCODE_CONFIG_FILES, commands: 'commands' },
 }
 
-// Where `opencode mcp add` puts the server in opencode.json(c).
-export const OPENCODE_KEY = ['mcp', 'servers', SUMMIT_NAME]
-
 // Purpose: the current config dir of a movable harness. Resolved only on request: a refused env value
 // (homes.ts) must block only the harness that uses it.
 export function configDirFor(home: string, harness: Movable): string {
@@ -31,7 +28,7 @@ export function configDirFor(home: string, harness: Movable): string {
 }
 
 // The `what` of the Codex registration edit (report lines).
-export const CODEX_WHAT = `[mcp_servers.${SUMMIT_NAME}]`
+export const CODEX_WHAT = `[${CODEX_KEY.join('.')}]`
 
 // Purpose: the config dirs a recorded file can be the registration of: each dir D where the file is
 // D/<one of MOVABLE[harness].files> (`x/.opencode/opencode.json` fits both `x` and `x/.opencode`).

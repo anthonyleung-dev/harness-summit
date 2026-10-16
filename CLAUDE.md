@@ -142,55 +142,57 @@ npm run dev -- <args>   # run the CLI from source with tsx
 Before you write anything, search for an existing helper and extend it with a parameter. Each of
 these has exactly one implementation:
 
-| What                | Where                                                                  |
-| ------------------- | ---------------------------------------------------------------------- |
-| Notice text         | `src/core/notice.ts`                                                   |
-| Signal protocol     | `src/core/signal.ts`, with the path in `src/core/paths.ts`             |
-| Host-key resolution | `src/core/hostKey.ts`                                                  |
-| Wake argv           | `src/core/wake.ts`                                                     |
-| External CLI spawns | `src/core/exec.ts` (`spawnPlan`, `cliBin`, `findOnPath`)               |
-| cmd.exe quoting     | `src/core/winCmd.ts`                                                   |
-| Lock files          | `src/core/lock.ts` (`withLock`, `formatLockOwner`, `isTaken`)          |
-| Freshness, sleep    | `src/core/freshness.ts` (`isStaleMtime`, `confirmGone`, `sleep`)       |
-| Busy errno (Win)    | `isBusyErrno` in `src/core/fsx.ts`                                     |
-| Name lookup         | `lookupName` in `src/core/members.ts` (exact, else one case match)     |
-| Name claims, undo   | `src/flows/claim.ts` (`claimName`, `restoreHolder`)                    |
-| Case matches        | `nameKeys` in `src/core/members.ts` (exact key first)                  |
-| Names, device names | `NameSchema`, `isReservedName`, `isSenderLabel` in `schemas.ts`        |
-| Same file path      | `samePath` in `src/core/project.ts`                                    |
-| Path inside a dir   | `isInsideDir` in `src/core/project.ts`                                 |
-| Stale-file rule     | `staleOwned` in `src/core/prune.ts` (gen-plugin and install)           |
-| Harness CLI env     | `execEnv`, `HOME_BOUND_ENV` in `src/install/homes.ts`                  |
-| Movable config dirs | `codexDir`, `opencodeDir` in `src/install/homes.ts` (`movableDir`)     |
-| Test env vars       | `setEnv`, `fakeRealHome` in `test/helpers/env.ts`                      |
-| Session renew       | `renewSession` in `src/core/sessions.ts` (never switches)              |
-| File modes          | `DIR_MODE`, `FILE_MODE` in `src/core/paths.ts`                         |
-| Lock lease refresh  | `src/core/lease.ts`                                                    |
-| Rename (retrying)   | `renameRetry` in `src/core/fsx.ts`                                     |
-| agent.json update   | `updateAgent` in `src/core/agents.ts`                                  |
-| Group lock          | `lockGroup` (`lockGroups` for several) in `src/core/members.ts`        |
-| Heartbeat           | `src/core/heartbeat.ts`, `isAlive` in `src/core/agents.ts`             |
-| Project root key    | `normalizeRootPath` in `src/core/project.ts`                           |
-| Session harnesses   | `SIGNAL_HARNESSES`, `SESSION_FILE_HARNESSES` in `hostKey.ts`           |
-| Session files       | `src/core/sessions.ts` (`writeSession(Sync)`, `readSession`)           |
-| Host key format     | `joinHostKey` in `src/core/hostKey.ts`                                 |
-| File read/write     | `src/core/fsx.ts` (`readTextFile`, `pathExists`, `pathKind`, JSON)     |
-| User path in way    | `inTheWay`, `keepInTheWay` in `src/install/inTheWay.ts`                |
-| CLI arguments       | `src/cli/args.ts`                                                      |
-| Product name        | `SUMMIT_NAME` in `src/core/schemas.ts`                                 |
-| Package root, ver.  | `packageRoot`, `SUMMIT_VERSION` in `src/core/version.ts`               |
-| package.json read   | `readPackageManifest` in `src/core/version.ts` (Zod)                   |
-| Bundle path         | `BUNDLE_FILE` in `src/core/version.ts` (`builtCli` in launch.ts)       |
-| User fix commands   | `src/core/fixText.ts` (no `&&`: PowerShell 5.1)                        |
-| Script entry guard  | `runIfMain` in `scripts/main.ts`                                       |
-| Uuid / name schema  | `UuidSchema`, `NameSchema` in `src/core/schemas.ts`                    |
-| Command bodies      | `src/install/templates.ts`                                             |
-| Registration read   | `readLaunch`, `sameLaunch` in `src/install/registration.ts`            |
-| pi/OMP extension    | `extensionFile` in `src/install/plan.ts`                               |
-| Generated files     | `src/cli/genPlugin.ts` (`OWNED_DIRS`, `ROOT_GENERATED`)                |
-| Test helpers        | `test/helpers/` (`env.ts`, `state.ts`, `mcp.ts`, `install.ts`)         |
-| Test launch, exec   | `TEST_LAUNCH`, `testLaunch`, `claudeExec` in `test/helpers/install.ts` |
-| Source-tree walk    | `sourceFiles` in `test/helpers/env.ts` (test-doors.test.ts guards)     |
+| What                | Where                                                                          |
+| ------------------- | ------------------------------------------------------------------------------ |
+| Notice text         | `src/core/notice.ts`                                                           |
+| Signal protocol     | `src/core/signal.ts`, with the path in `src/core/paths.ts`                     |
+| Host-key resolution | `src/core/hostKey.ts`                                                          |
+| Wake argv           | `src/core/wake.ts`                                                             |
+| External CLI spawns | `src/core/exec.ts` (`spawnPlan`, `cliBin`, `findOnPath`)                       |
+| cmd.exe quoting     | `src/core/winCmd.ts`                                                           |
+| Lock files          | `src/core/lock.ts` (`withLock`, `formatLockOwner`, `isTaken`)                  |
+| Freshness, sleep    | `src/core/freshness.ts` (`isStaleMtime`, `confirmGone`, `sleep`)               |
+| Busy errno (Win)    | `isBusyErrno` in `src/core/fsx.ts`                                             |
+| Name lookup         | `lookupName` in `src/core/members.ts` (exact, else one case match)             |
+| Name claims, undo   | `src/flows/claim.ts` (`claimName`, `restoreHolder`)                            |
+| Case matches        | `nameKeys` in `src/core/members.ts` (exact key first)                          |
+| Names, device names | `NameSchema`, `isReservedName`, `isSenderLabel` in `schemas.ts`                |
+| Same file path      | `samePath` in `src/core/project.ts`                                            |
+| Path inside a dir   | `isInsideDir` in `src/core/project.ts`                                         |
+| Stale-file rule     | `staleOwned` in `src/core/prune.ts` (gen-plugin and install)                   |
+| Harness CLI env     | `execEnv`, `HOME_BOUND_ENV` in `src/install/homes.ts`                          |
+| Movable config dirs | `codexDir`, `opencodeDir` in `src/install/homes.ts` (`movableDir`)             |
+| Test env vars       | `setEnv`, `fakeRealHome` in `test/helpers/env.ts`                              |
+| Session renew       | `renewSession` in `src/core/sessions.ts` (never switches)                      |
+| File modes          | `DIR_MODE`, `FILE_MODE` in `src/core/paths.ts`                                 |
+| Lock lease refresh  | `src/core/lease.ts`                                                            |
+| Rename (retrying)   | `renameRetry` in `src/core/fsx.ts`                                             |
+| agent.json update   | `updateAgent` in `src/core/agents.ts`                                          |
+| Group lock          | `lockGroup` (`lockGroups` for several) in `src/core/members.ts`                |
+| Heartbeat           | `src/core/heartbeat.ts`, `isAlive` in `src/core/agents.ts`                     |
+| Project root key    | `normalizeRootPath` in `src/core/project.ts`                                   |
+| Session harnesses   | `SIGNAL_HARNESSES`, `SESSION_FILE_HARNESSES` in `hostKey.ts`                   |
+| Session files       | `src/core/sessions.ts` (`writeSession(Sync)`, `readSession`)                   |
+| Host key format     | `joinHostKey` in `src/core/hostKey.ts`                                         |
+| File read/write     | `src/core/fsx.ts` (`readTextFile`, `pathExists`, `pathKind`, JSON)             |
+| User path in way    | `inTheWay`, `keepInTheWay` in `src/install/inTheWay.ts`                        |
+| CLI arguments       | `src/cli/args.ts`                                                              |
+| Product name        | `SUMMIT_NAME` in `src/core/schemas.ts`                                         |
+| Package root, ver.  | `packageRoot`, `SUMMIT_VERSION` in `src/core/version.ts`                       |
+| package.json read   | `readPackageManifest` in `src/core/version.ts` (Zod)                           |
+| Bundle path         | `BUNDLE_FILE` in `src/core/version.ts` (`builtCli` in launch.ts)               |
+| User fix commands   | `src/core/fixText.ts` (no `&&`: PowerShell 5.1)                                |
+| Script entry guard  | `runIfMain` in `scripts/main.ts`                                               |
+| Uuid / name schema  | `UuidSchema`, `NameSchema` in `src/core/schemas.ts`                            |
+| Command bodies      | `src/install/templates.ts`                                                     |
+| Registration read   | `readLaunch`, `sameLaunch` in `src/install/registration.ts`                    |
+| Registration keys   | `SERVER_KEY`, `JSON_KEY`, `CODEX_KEY`, `OPENCODE_KEY` in `src/install/keys.ts` |
+| Injected MCP line   | `MCP_PREFIX` in `src/install/launch.ts` (test-doors.test.ts guards)            |
+| pi/OMP extension    | `extensionFile` in `src/install/plan.ts`                                       |
+| Generated files     | `src/cli/genPlugin.ts` (`OWNED_DIRS`, `ROOT_GENERATED`)                        |
+| Test helpers        | `test/helpers/` (`env.ts`, `state.ts`, `mcp.ts`, `install.ts`)                 |
+| Test launch, exec   | `TEST_LAUNCH`, `testLaunch`, `claudeExec` in `test/helpers/install.ts`         |
+| Source-tree walk    | `sourceFiles` in `test/helpers/env.ts` (test-doors.test.ts guards)             |
 
 The pi/OMP extension is a separate door, and this is the written reason: the installed copy lives
 alone in the harness's extension dir. So it gets the host key, the signal path and the notice from

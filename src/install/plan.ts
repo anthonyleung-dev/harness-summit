@@ -6,23 +6,16 @@ import { PLUGIN_ID } from '../core/fixText.js'
 import { log } from '../core/log.js'
 import { isInsideDir } from '../core/project.js'
 import { staleOwned } from '../core/prune.js'
-import { SUMMIT_NAME, type Harness } from '../core/schemas.js'
+import { type Harness } from '../core/schemas.js'
 import { SUMMIT_VERSION } from '../core/version.js'
 import { TOOL_NAMES } from '../server/tools.js'
 import type { Action, SyncAction } from './actions.js'
 import { removeJsonKey, removeTomlBlock, setJsonKey, tomlBlock, upsertTomlBlock } from './edits.js'
 import { codexDir, execEnv, OPENCODE_CONFIG_FILES, opencodeDir } from './homes.js'
+import { CODEX_KEY, JSON_KEY, OPENCODE_KEY, SERVER_KEY } from './keys.js'
 import { renderExtension } from './launch.js'
-import {
-    CODEX_CONFIG,
-    CODEX_WHAT,
-    configDirFor,
-    MOVABLE,
-    OPENCODE_KEY,
-    retiredRegistrations,
-    staleConfigDirs,
-} from './movable.js'
-import { CODEX_KEY, JSON_KEY, readLaunch, sameLaunch } from './registration.js'
+import { CODEX_CONFIG, CODEX_WHAT, configDirFor, MOVABLE, retiredRegistrations, staleConfigDirs } from './movable.js'
+import { readLaunch, sameLaunch } from './registration.js'
 import { mcpLaunch, renderClaudePlugin, renderCommands, renderMarketplace, type Launch } from './render.js'
 import { dataDir, type InstallState } from './state.js'
 
@@ -32,9 +25,6 @@ export interface PlanInput {
     // The OpenCode global config (install.ts opencodeConfigPath), looked up only when OpenCode is planned.
     opencodeConfig?: string
 }
-
-// Registration key in every harness config, and the Claude plugin + marketplace name.
-const SERVER_KEY = SUMMIT_NAME
 
 // Purpose: where each harness keeps its command files (relative paths come from render.ts). A switch, so
 // only the requested harness's dir is resolved.
@@ -218,7 +208,7 @@ function opencodePlan(p: PlanInput): Action[] {
                 args: ['mcp', 'add', '--global', ...envFlags, SERVER_KEY, '--', command, ...args],
                 env: execEnv(p.home),
             },
-            holds: (t) => sameLaunch(readLaunch('opencode', t, file), wanted, true),
+            holds: (t) => sameLaunch(readLaunch('opencode', t, file).launch, wanted, true),
             revert: (t, original) => removeJsonKey(t, keyPath, original, file),
         },
         ...fileActions(commandDirFor(p.home, 'opencode'), renderCommands('opencode')),

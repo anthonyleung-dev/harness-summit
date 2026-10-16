@@ -463,7 +463,11 @@ claude-session-start`, `hook claude-file-changed`, `notice --host-key <key>`, `i
   command edit's `holds` finds `mcp.servers.harness-summit` with the wanted `command` array and
   `environment` (`readLaunch`, `sameLaunch` in `src/install/registration.ts`). So a re-install after the
   launch changed (another CLI path or node) edits or runs again. Such a re-edit keeps the recorded
-  pre-install state and the first backup, so uninstall still restores the user's original bytes. `uninstall` removes exactly what `install` added: a parent object install created
+  pre-install state and writes no backup: a backup only ever holds the user's file from before install's
+  first edit (none when install created the file). So uninstall restores the user's original bytes, or
+  removes a file install created, and leaves no backup behind. The parent dirs of an edited file are
+  recorded before the edit, also before an external command that creates the file, so uninstall removes
+  the ones install's run created. `uninstall` removes exactly what `install` added: a parent object install created
   goes too when it is empty; a key the user already removed is no error. `--dry-run` prints the plan.
 - The install state file is written after every action that changed it (write-ahead), so an install
   that fails half way can still be uninstalled, and a re-run does not repeat external commands that
@@ -497,7 +501,10 @@ claude-session-start`, `hook claude-file-changed`, `notice --host-key <key>`, `i
   the harness, the node and CLI the registration starts (`(missing)` when that CLI file is gone), the
   current ones, and the fix `harness-summit install --harness <harness>`. A warn, not a fail (exit 0): the
   old CLI may still run, and only an install fixes it. The env (harness CLI paths) is not compared, because
-  doctor's PATH need not be install's.
+  doctor's PATH need not be install's. Paths compare with `samePath` (case-insensitive on Windows). A
+  registration file that does not parse, a server entry of the wrong shape, or a pi extension with no
+  injected launch prints `registered=no` and a `warn <harness> cannot read the registration in <file>:
+  <reason>` line with the fix (doctor never throws on it; exit 0).
 - The CLI is ONE self-contained ESM file, `dist/cli.js`, bundled by esbuild (`scripts/bundle.ts`). The
   package has no runtime dependencies, so `bin` and the public plugin run with no dependency install at
   all (Claude Code installs no `node_modules` for an npm plugin without a lockfile, and npm never
