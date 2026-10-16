@@ -22,6 +22,7 @@ import {
     retiredRegistrations,
     staleConfigDirs,
 } from './movable.js'
+import { CODEX_KEY, JSON_KEY, readLaunch, sameLaunch } from './registration.js'
 import { mcpLaunch, renderClaudePlugin, renderCommands, renderMarketplace, type Launch } from './render.js'
 import { dataDir, type InstallState } from './state.js'
 
@@ -59,16 +60,21 @@ export function registrationFor(
 ): { file: string; keyPath: string[] } {
     switch (harness) {
         case 'codex':
-            return { file: path.join(codexDir(home), CODEX_CONFIG), keyPath: ['mcp_servers', SERVER_KEY] }
+            return { file: path.join(codexDir(home), CODEX_CONFIG), keyPath: CODEX_KEY }
         case 'pi':
         case 'omp':
-            return { file: path.join(home, `.${harness}`, 'agent', 'mcp.json'), keyPath: ['mcpServers', SERVER_KEY] }
+            return { file: path.join(home, `.${harness}`, 'agent', 'mcp.json'), keyPath: JSON_KEY }
         case 'opencode':
             return {
                 file: opencodeConfig ?? path.join(opencodeDir(home), ...OPENCODE_CONFIG_FILES[0]!),
                 keyPath: OPENCODE_KEY,
             }
     }
+}
+
+// Purpose: the shared pi/OMP extension file install writes for one of them.
+export function extensionFile(home: string, harness: 'pi' | 'omp'): string {
+    return path.join(path.dirname(registrationFor(home, harness).file), 'extensions', 'harness-summit.ts')
 }
 
 // Purpose: owned-file actions for rendered files under one directory.
@@ -188,20 +194,18 @@ function piLikePlan(p: PlanInput, harness: 'pi' | 'omp'): Action[] {
             : jsonKeyEdit(reg.file, reg.keyPath, mcpLaunch(p.launch, harness))
     return [
         registration,
-        {
-            kind: 'file',
-            path: path.join(path.dirname(reg.file), 'extensions', 'harness-summit.ts'),
-            content: renderExtension(harness, p.launch),
-        },
+        { kind: 'file', path: extensionFile(p.home, harness), content: renderExtension(harness, p.launch) },
         ...fileActions(commandDirFor(p.home, harness), renderCommands(harness)),
     ]
 }
 
 // Purpose: OpenCode: `opencode mcp add --global` (never a hand edit of the JSONC), command files. The
 // command writes `mcp.servers.harness-summit` = `{ type: "local", command: [...], environment }` into
-// the file opencodeConfigPath() names; each `--env K=V` becomes one `environment` key.
+// the file opencodeConfigPath() names; each `--env K=V` becomes one `environment` key. The command cannot be
+// previewed, so `holds` tells whether the file already starts this launch (else a re-install runs it again).
 function opencodePlan(p: PlanInput): Action[] {
-    const { command, args, env } = mcpLaunch(p.launch, 'opencode')
+    const wanted = mcpLaunch(p.launch, 'opencode')
+    const { command, args, env } = wanted
     const envFlags = Object.entries(env ?? {}).flatMap(([k, v]) => ['--env', `${k}=${v}`])
     const { file, keyPath } = registrationFor(p.home, 'opencode', p.opencodeConfig)
     return [
@@ -214,6 +218,7 @@ function opencodePlan(p: PlanInput): Action[] {
                 args: ['mcp', 'add', '--global', ...envFlags, SERVER_KEY, '--', command, ...args],
                 env: execEnv(p.home),
             },
+            holds: (t) => sameLaunch(readLaunch('opencode', t, file), wanted, true),
             revert: (t, original) => removeJsonKey(t, keyPath, original, file),
         },
         ...fileActions(commandDirFor(p.home, 'opencode'), renderCommands('opencode')),
@@ -224,10 +229,8 @@ function opencodePlan(p: PlanInput): Action[] {
 // release may stop rendering). Only recorded files there are ever pruned, so a user's own file is safe.
 export function ownedDirsFor(home: string, harness: Harness): string[] {
     if (harness === 'claude') return [claudeMarketDir(home)]
-    if (harness === 'pi' || harness === 'omp') {
-        const ext = path.join(path.dirname(registrationFor(home, harness).file), 'extensions')
-        return [commandDirFor(home, harness), ext]
-    }
+    if (harness === 'pi' || harness === 'omp')
+        return [commandDirFor(home, harness), path.dirname(extensionFile(home, harness))]
     return [commandDirFor(home, harness)]
 }
 

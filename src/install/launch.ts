@@ -61,7 +61,9 @@ export function npmPluginLaunch(): Launch {
 export const EXTENSION_SOURCE = path.join('adapters', 'pi-omp', 'harness-summit.ts')
 export const HARNESS_MARKER = 'const INJECTED_HARNESS: string | null = null'
 export const CLI_MARKER = 'const INJECTED_CLI: string[] | null = null'
-export const MCP_MARKER = 'const INJECTED_MCP: McpLaunch | null = null'
+// The line start of the injected MCP launch; registration.ts reads the launch back from it.
+export const MCP_PREFIX = 'const INJECTED_MCP: McpLaunch | null = '
+export const MCP_MARKER = `${MCP_PREFIX}null`
 
 // Purpose: the pi/OMP extension source with the harness, the absolute CLI launch and (pi) the MCP server
 // launch substituted. pi registers the server from the extension (SPEC §3, §8).
@@ -74,8 +76,5 @@ export function renderExtension(harness: 'pi' | 'omp', launch: Launch): string {
     return src
         .replace(HARNESS_MARKER, `const INJECTED_HARNESS: string | null = ${JSON.stringify(harness)}`)
         .replace(CLI_MARKER, `const INJECTED_CLI: string[] | null = ${JSON.stringify([launch.node, launch.cli])}`)
-        .replace(
-            MCP_MARKER,
-            `const INJECTED_MCP: McpLaunch | null = ${harness === 'pi' ? JSON.stringify(mcpLaunch(launch, 'pi')) : 'null'}`,
-        )
+        .replace(MCP_MARKER, `${MCP_PREFIX}${harness === 'pi' ? JSON.stringify(mcpLaunch(launch, 'pi')) : 'null'}`)
 }

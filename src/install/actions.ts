@@ -24,6 +24,9 @@ export type Action =
           what: string
           apply?: (text: string) => string
           run?: ExecRequest
+          // A `run` edit only: tell whether `text` already holds what the command writes (a command cannot be
+          // previewed like `apply`). Without it, a file unchanged since our last edit counts as holding it.
+          holds?: (text: string) => boolean
           // Undo our edit in `text`. `original` is the file before install (the backup; '' when install
           // created the file; null when unknown).
           revert: (text: string, original: string | null) => string
@@ -116,13 +119,21 @@ async function applyFile(a: Extract<Action, { kind: 'file' }>, env: ActionEnv): 
     env.state.files[a.path] = sha(a.content)
 }
 
-// Purpose: edit a user file once-backed-up; a no-op when it still holds our last edit.
+// Purpose: tell whether `text` already holds what an edit writes: `apply` changes nothing, or `holds` says so.
+function holdsEdit(a: Extract<Action, { kind: 'edit' }>, text: string): boolean {
+    if (a.run) return a.holds?.(text) ?? true
+    return (a.apply ?? ((t: string) => t))(text) === text
+}
+
+// Purpose: edit a user file once-backed-up; a no-op when it still holds our last edit and that edit is still the
+// wanted one (a re-install after the launch changed edits again, SPEC §8).
 async function applyEdit(a: Extract<Action, { kind: 'edit' }>, env: ActionEnv): Promise<void> {
     if (await keepInTheWay(a.path, 'file', env, () => delete env.state.edits[a.path])) return
     const current = await readTextFile(a.path)
     const text = current ?? ''
     const rec = env.state.edits[a.path]
-    if (rec !== undefined && sha(text) === rec.postSha) return env.report(`ok      ${a.path} (${a.what})`)
+    const ours = rec !== undefined && sha(text) === rec.postSha
+    if (ours && holdsEdit(a, text)) return env.report(`ok      ${a.path} (${a.what})`)
     env.report(
         `${a.run ? 'run    ' : 'edit   '} ${a.path} (${a.what})${a.run ? `: ${a.run.cmd} ${a.run.args.join(' ')}` : ''}`,
     )
@@ -138,7 +149,8 @@ async function applyEdit(a: Extract<Action, { kind: 'edit' }>, env: ActionEnv): 
         await ensureParentDirs(a.path, env.state)
         await fs.writeFile(a.path, next)
     }
-    const preSha = rec === undefined ? sha(text) : sha(a.revert(text, null))
+    // A file that still holds our last edit keeps its recorded pre-install state, so uninstall restores the backup.
+    const preSha = rec === undefined ? sha(text) : ours ? rec.preSha : sha(a.revert(text, null))
     env.state.edits[a.path] = { existed: rec?.existed ?? current !== null, preSha, postSha: sha(next) }
 }
 

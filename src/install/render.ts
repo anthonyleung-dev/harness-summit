@@ -23,12 +23,18 @@ export interface RenderedFile {
     content: string
 }
 
-// Purpose: command, args and (when install found harness CLIs) env of the MCP server registration
-// for one harness.
-export function mcpLaunch(
-    launch: Launch,
-    harness: Harness,
-): { command: string; args: string[]; env?: Record<string, string> } {
+// What one MCP server registration starts: command, args and (when install found harness CLIs) env.
+export interface McpLaunch {
+    command: string
+    args: string[]
+    env?: Record<string, string>
+}
+
+// The Claude plugin's MCP server file (in the plugin dir).
+export const CLAUDE_MCP_FILE = '.mcp.json'
+
+// Purpose: the MCP server registration of one harness.
+export function mcpLaunch(launch: Launch, harness: Harness): McpLaunch {
     const base = { command: launch.node, args: [launch.cli, 'mcp', '--harness', harness] }
     return launch.env !== undefined && Object.keys(launch.env).length > 0 ? { ...base, env: launch.env } : base
 }
@@ -131,7 +137,7 @@ export function renderClaudePlugin(launch: Launch): RenderedFile[] {
     const mcp = { mcpServers: { [SUMMIT_NAME]: mcpLaunch(launch, 'claude') } }
     return [
         { rel: '.claude-plugin/plugin.json', content: prettyJson(manifest) },
-        { rel: '.mcp.json', content: prettyJson(mcp) },
+        { rel: CLAUDE_MCP_FILE, content: prettyJson(mcp) },
         { rel: 'hooks/hooks.json', content: prettyJson({ hooks: claudeHooks(launch) }) },
         ...renderCommands('claude'),
     ]

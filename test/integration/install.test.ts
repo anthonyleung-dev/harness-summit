@@ -1,5 +1,6 @@
 // Acceptance 6: install/uninstall against a seeded temp home. Foreign bytes stay identical, install is
-// idempotent, uninstall restores the original tree exactly. External commands are stubbed.
+// idempotent, uninstall restores the original tree exactly. External commands are stubbed (`opencode mcp add`
+// writes its key the way the real one does: fakeOpencode).
 import fs from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -8,14 +9,14 @@ import { HARNESSES } from '../../src/core/schemas.js'
 import { BACKUP_SUFFIX } from '../../src/install/actions.js'
 import { runInstall, runUninstall } from '../../src/install/install.js'
 import { runCli, seededHome, snapshot, tmpDir } from '../helpers/env.js'
-import { claudeExec, LIST_PLUGINS, TEST_LAUNCH } from '../helpers/install.js'
+import { claudeExec, fakeOpencode, LIST_PLUGINS, TEST_LAUNCH } from '../helpers/install.js'
 
 const launch = TEST_LAUNCH
 
 describe('install / uninstall (in-process, stubbed exec)', () => {
     const home = seededHome()
     const original = snapshot(home)
-    const exec = claudeExec()
+    const exec = claudeExec(fakeOpencode)
     const opts = { harnesses: [...HARNESSES], home, dryRun: false, exec, launch }
     const read = (rel: string) => fs.readFileSync(path.join(home, rel), 'utf8')
     // The two list commands, at the path each of the five harnesses reads them from.
@@ -53,9 +54,12 @@ describe('install / uninstall (in-process, stubbed exec)', () => {
         for (const rel of ['.codex/config.toml', '.omp/agent/mcp.json', '.config/opencode/opencode.jsonc']) {
             expect(read(rel + BACKUP_SUFFIX)).toBe(original.files[rel])
         }
-        expect(read('.config/opencode/opencode.jsonc')).toBe(original.files['.config/opencode/opencode.jsonc'])
+        expect(read('.config/opencode/opencode.jsonc')).toContain(
+            '"harness-summit": {"type":"local","command":["/usr/bin/node","/opt/harness-summit/dist/cli.js","mcp","--harness","opencode"]}',
+        )
+        const edited = ['.codex/config.toml', '.omp/agent/mcp.json', '.config/opencode/opencode.jsonc']
         for (const [rel, content] of Object.entries(original.files)) {
-            if (!rel.endsWith('.toml') && rel !== '.omp/agent/mcp.json') expect(read(rel)).toBe(content)
+            if (!edited.includes(rel)) expect(read(rel)).toBe(content)
         }
 
         const ext = read('.pi/agent/extensions/harness-summit.ts')
