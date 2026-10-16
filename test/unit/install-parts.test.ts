@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { JOIN_INSTRUCTION, SUMMIT_GUIDANCE } from '../../src/core/notice.js'
 import { HARNESSES } from '../../src/core/schemas.js'
 import { removeJsonKey, removeTomlBlock, setJsonKey, tomlBlock, upsertTomlBlock } from '../../src/install/edits.js'
+import { JSON_KEY, OPENCODE_KEY } from '../../src/install/keys.js'
 import { codexTables } from '../../src/install/plan.js'
 import { renderClaudePlugin, renderCommands } from '../../src/install/render.js'
 import { COMMANDS } from '../../src/install/templates.js'
@@ -56,22 +57,22 @@ describe('TOML block', () => {
 describe('JSON key edit', () => {
     it('adds and removes one key without touching comments or other keys', () => {
         const text = '{\n  // keep\n  "a": 1, /* and this */\n  "mcp": { "servers": { "x": {} } },\n}\n'
-        const added = setJsonKey(text, ['mcp', 'servers', 'harness-summit'], { type: 'local' }, 'f')
+        const added = setJsonKey(text, OPENCODE_KEY, { type: 'local' }, 'f')
         expect(added).toContain('// keep')
         expect(added).toContain('/* and this */')
-        expect(setJsonKey(added, ['mcp', 'servers', 'harness-summit'], undefined, 'f')).toBe(text)
+        expect(setJsonKey(added, OPENCODE_KEY, undefined, 'f')).toBe(text)
         expect(() => setJsonKey('{ nope', ['a'], 1, 'f')).toThrow(
             expect.objectContaining({ code: 'SUMMIT_CORRUPT_FILE' }),
         )
     })
 
     it('removing a key whose parent is gone is a no-op (REVIEW m5)', () => {
-        expect(setJsonKey('{"other": 2}\n', ['mcpServers', 'harness-summit'], undefined, 'f')).toBe('{"other": 2}\n')
-        expect(setJsonKey('', ['mcpServers', 'harness-summit'], undefined, 'f')).toBe('')
+        expect(setJsonKey('{"other": 2}\n', JSON_KEY, undefined, 'f')).toBe('{"other": 2}\n')
+        expect(setJsonKey('', JSON_KEY, undefined, 'f')).toBe('')
     })
 
     it('removes a parent object install created when it is empty, never one the user had (REVIEW m6)', () => {
-        const keyPath = ['mcpServers', 'harness-summit']
+        const keyPath = JSON_KEY
         const original = '{\n  "other": 1\n}\n'
         const installed = setJsonKey(original, keyPath, { command: 'n' }, 'f')
         const edited = installed.replace('"other": 1', '"other": 2')

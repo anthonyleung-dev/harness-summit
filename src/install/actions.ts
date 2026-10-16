@@ -138,15 +138,17 @@ async function applyEdit(a: Extract<Action, { kind: 'edit' }>, env: ActionEnv): 
         `${a.run ? 'run    ' : 'edit   '} ${a.path} (${a.what})${a.run ? `: ${a.run.cmd} ${a.run.args.join(' ')}` : ''}`,
     )
     if (env.dryRun) return
-    if (current !== null && !(await pathExists(a.path + BACKUP_SUFFIX)))
+    // The backup holds only the user's file: a file that still holds our last edit is never backed up.
+    if (current !== null && !ours && !(await pathExists(a.path + BACKUP_SUFFIX)))
         await fs.writeFile(a.path + BACKUP_SUFFIX, current)
+    // Recorded before a command runs too, so uninstall removes the dirs that command creates for its file.
+    await ensureParentDirs(a.path, env.state)
     let next: string
     if (a.run) {
         await runChecked(a.run, env.exec)
         next = (await readTextFile(a.path)) ?? ''
     } else {
         next = (a.apply ?? ((t: string) => t))(text)
-        await ensureParentDirs(a.path, env.state)
         await fs.writeFile(a.path, next)
     }
     // A file that still holds our last edit keeps its recorded pre-install state, so uninstall restores the backup.

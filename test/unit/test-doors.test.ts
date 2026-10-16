@@ -45,6 +45,44 @@ describe('one door for test fixtures', () => {
     })
 })
 
+// Purpose: tell whether source text spells out the injected MCP launch line of the pi/OMP extension (MCP_PREFIX).
+function injectedMcpLiteral(text: string): boolean {
+    return /INJECTED_MCP: McpLaunch \| null = /.test(text)
+}
+
+// Purpose: tell whether source text spells out a registration key path (JSON_KEY, CODEX_KEY, OPENCODE_KEY).
+function keyPathLiteral(text: string): boolean {
+    return /\[\s*['"](mcpServers|mcp_servers|mcp)['"]\s*,\s*(['"](harness-summit|servers)['"]|SUMMIT_NAME)/.test(text)
+}
+
+describe('one door for registration keys and the injected launch line', () => {
+    const files = ['src', 'scripts', 'test', 'adapters'].flatMap((d) => sourceFiles(path.join(REPO, d)))
+    const rel = (f: string) => path.relative(REPO, f).split(path.sep).join('/')
+    const hits = (detect: (text: string) => boolean) =>
+        files
+            .filter((f) => detect(fs.readFileSync(f, 'utf8')))
+            .map(rel)
+            .sort()
+
+    it('only src/install/keys.ts spells a key path; only launch.ts and the extension source the launch line', () => {
+        expect(hits(keyPathLiteral)).toEqual(['src/install/keys.ts', 'test/unit/test-doors.test.ts'])
+        expect(hits(injectedMcpLiteral)).toEqual([
+            'adapters/pi-omp/harness-summit.ts',
+            'src/install/launch.ts',
+            'test/unit/test-doors.test.ts',
+        ])
+    })
+
+    it('the detectors see each raw form', () => {
+        expect(keyPathLiteral("setJsonKey(t, ['mcpServers', 'harness-summit'], v, f)")).toBe(true)
+        expect(keyPathLiteral("['mcp_servers', SUMMIT_NAME]")).toBe(true)
+        expect(keyPathLiteral('["mcp", "servers", "harness-summit"]')).toBe(true)
+        expect(keyPathLiteral("getAt(value, ['mcpServers'])")).toBe(false)
+        expect(injectedMcpLiteral('`const INJECTED_MCP: McpLaunch | null = ${x}`')).toBe(true)
+        expect(injectedMcpLiteral('MCP_PREFIX')).toBe(false)
+    })
+})
+
 describe('one door for spawns', () => {
     it('only src/core/exec.ts and the two written exemptions (CLAUDE.md) import node:child_process', () => {
         const files = ['src', 'scripts', 'adapters'].flatMap((d) => sourceFiles(path.join(REPO, d)))

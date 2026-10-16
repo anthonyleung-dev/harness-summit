@@ -7,7 +7,7 @@ import path from 'node:path'
 import type { CaptureResult, ExecRequest } from '../../src/core/exec.js'
 import { PLUGIN_ID } from '../../src/core/fixText.js'
 import { setJsonKey } from '../../src/install/edits.js'
-import { OPENCODE_KEY } from '../../src/install/movable.js'
+import { OPENCODE_KEY } from '../../src/install/keys.js'
 import type { Launch } from '../../src/install/render.js'
 import { recordingExec, type RecordingExec } from './env.js'
 

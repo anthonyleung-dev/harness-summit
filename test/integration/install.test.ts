@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest'
 import { HARNESSES } from '../../src/core/schemas.js'
 import { BACKUP_SUFFIX } from '../../src/install/actions.js'
 import { runInstall, runUninstall } from '../../src/install/install.js'
+import { MCP_PREFIX } from '../../src/install/launch.js'
 import { runCli, seededHome, snapshot, tmpDir } from '../helpers/env.js'
 import { claudeExec, fakeOpencode, LIST_PLUGINS, TEST_LAUNCH } from '../helpers/install.js'
 
@@ -68,11 +69,12 @@ describe('install / uninstall (in-process, stubbed exec)', () => {
             'const INJECTED_CLI: string[] | null = ["/usr/bin/node","/opt/harness-summit/dist/cli.js"]',
         )
         expect(ext).toContain(
-            'const INJECTED_MCP: McpLaunch | null = {"command":"/usr/bin/node","args":["/opt/harness-summit/dist/cli.js","mcp","--harness","pi"]}',
+            MCP_PREFIX +
+                '{"command":"/usr/bin/node","args":["/opt/harness-summit/dist/cli.js","mcp","--harness","pi"]}',
         )
         const ompExt = read('.omp/agent/extensions/harness-summit.ts')
         expect(ompExt).toContain('const INJECTED_HARNESS: string | null = "omp"')
-        expect(ompExt).toContain('const INJECTED_MCP: McpLaunch | null = null')
+        expect(ompExt).toContain(`${MCP_PREFIX}null`)
 
         expect(fs.readdirSync(path.join(home, '.codex/skills')).sort()).toEqual([
             'sg',

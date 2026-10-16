@@ -9,6 +9,7 @@ import { HARNESSES } from '../../src/core/schemas.js'
 import { BACKUP_SUFFIX } from '../../src/install/actions.js'
 import { setJsonKey } from '../../src/install/edits.js'
 import { opencodeConfigPath, runInstall, runUninstall } from '../../src/install/install.js'
+import { JSON_KEY } from '../../src/install/keys.js'
 import { sha, stateFile } from '../../src/install/state.js'
 import { errorCode, recordingExec, seededHome, snapshot } from '../helpers/env.js'
 import { claudeExec, testLaunch } from '../helpers/install.js'
@@ -120,7 +121,7 @@ describe('upgrade from an install that registered pi in mcp.json', () => {
     function olderPiInstall(home: string): { file: string; original: string } {
         const file = path.join(home, '.pi/agent/mcp.json')
         const original = fs.readFileSync(file, 'utf8')
-        const edited = setJsonKey(original, ['mcpServers', 'harness-summit'], { command: 'node' }, file)
+        const edited = setJsonKey(original, JSON_KEY, { command: 'node' }, file)
         fs.writeFileSync(file + BACKUP_SUFFIX, original)
         fs.writeFileSync(file, edited)
         const state = { version: 1, files: {}, dirs: [], execs: {}, edits: {} as Record<string, unknown> }

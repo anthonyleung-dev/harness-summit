@@ -5,16 +5,12 @@
 import { z } from 'zod'
 
 import { log } from '../core/log.js'
-import { SUMMIT_NAME, type Harness } from '../core/schemas.js'
+import { samePath } from '../core/project.js'
+import { type Harness } from '../core/schemas.js'
 import { getAt, parseJsonc, parseTomlOrRefuse } from './edits.js'
+import { CODEX_KEY, JSON_KEY, OPENCODE_KEY } from './keys.js'
 import { MCP_PREFIX } from './launch.js'
-import { OPENCODE_KEY } from './movable.js'
 import type { McpLaunch } from './render.js'
-
-// The key of the server in a JSON `mcpServers` map (Claude's .mcp.json, the pi and OMP mcp.json).
-export const JSON_KEY = ['mcpServers', SUMMIT_NAME]
-// The key of the server table in the Codex config.toml.
-export const CODEX_KEY = ['mcp_servers', SUMMIT_NAME]
 
 const EnvSchema = z.record(z.string(), z.string())
 const LaunchSchema = z.object({ command: z.string(), args: z.array(z.string()), env: EnvSchema.optional() })
@@ -38,26 +34,54 @@ function serverValue(harness: Harness, text: string, file: string): unknown {
     }
 }
 
-// Purpose: the launch a registration text starts, or null when it holds none or cannot be read (logged).
-export function readLaunch(harness: Harness, text: string, file: string): McpLaunch | null {
+// What readLaunch found: the launch, or null; `problem` says why a text that should hold a launch does not (a
+// file that does not parse, a wrong shape, a pi extension with no injected launch). A config with no
+// registration at all reads launch null, problem null.
+export interface LaunchRead {
+    launch: McpLaunch | null
+    problem: string | null
+}
+
+// Purpose: the reason text of a failed read (a Zod error lists each bad field).
+function problemOf(err: unknown): string {
+    if (err instanceof z.ZodError)
+        return `unexpected shape: ${err.issues.map((i) => `${i.path.join('.')} ${i.message}`).join('; ')}`
+    return err instanceof Error ? err.message : String(err)
+}
+
+// Purpose: the launch a registration text starts, and why none could be read (logged).
+export function readLaunch(harness: Harness, text: string, file: string): LaunchRead {
     try {
         const value = serverValue(harness, text, file)
-        if (value === undefined || value === null) return null
-        if (harness !== 'opencode') return LaunchSchema.parse(value)
+        if (value === undefined || value === null) {
+            return { launch: null, problem: harness === 'pi' ? 'the extension holds no injected MCP launch' : null }
+        }
+        if (harness !== 'opencode') return { launch: LaunchSchema.parse(value), problem: null }
         const { command, environment } = OpencodeSchema.parse(value)
-        return { command: command[0]!, args: command.slice(1), env: environment }
+        return { launch: { command: command[0]!, args: command.slice(1), env: environment }, problem: null }
     } catch (err) {
         log('warn', 'readLaunch', 'registration not readable', { harness, file, error: String(err) })
-        return null
+        return { launch: null, problem: problemOf(err) }
     }
 }
 
-// Purpose: tell whether a registration starts the wanted launch: same command and args, and with `withEnv`
-// the same env (a missing env equals an empty one).
-export function sameLaunch(found: McpLaunch | null, wanted: McpLaunch, withEnv: boolean): boolean {
-    if (found === null || found.command !== wanted.command) return false
-    if (JSON.stringify(found.args) !== JSON.stringify(wanted.args)) return false
+// Purpose: tell whether a registration starts the wanted launch: the same node and CLI (samePath), the same other
+// args, and with `withEnv` the same env (a missing env equals an empty one; values are paths, samePath).
+export function sameLaunch(
+    found: McpLaunch | null,
+    wanted: McpLaunch,
+    withEnv: boolean,
+    platform: NodeJS.Platform = process.platform,
+): boolean {
+    if (found === null || !samePath(found.command, wanted.command, platform)) return false
+    const [cli, ...rest] = found.args
+    const [wantedCli, ...wantedRest] = wanted.args
+    if (cli === undefined || wantedCli === undefined || !samePath(cli, wantedCli, platform)) return false
+    if (JSON.stringify(rest) !== JSON.stringify(wantedRest)) return false
     if (!withEnv) return true
-    const sorted = (env?: Record<string, string>) => JSON.stringify(Object.entries(env ?? {}).sort())
-    return sorted(found.env) === sorted(wanted.env)
+    const env = found.env ?? {}
+    const wantedEnv = wanted.env ?? {}
+    const keys = Object.keys(wantedEnv)
+    if (Object.keys(env).length !== keys.length) return false
+    return keys.every((k) => env[k] !== undefined && samePath(env[k], wantedEnv[k]!, platform))
 }

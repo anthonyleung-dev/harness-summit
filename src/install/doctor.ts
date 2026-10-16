@@ -13,7 +13,7 @@ import { HARNESSES, type Harness } from '../core/schemas.js'
 import { opencodeConfigPath } from './install.js'
 import { builtCli, installLaunch } from './launch.js'
 import { commandDirFor, extensionFile, registrationFor } from './plan.js'
-import { readLaunch, sameLaunch } from './registration.js'
+import { readLaunch, sameLaunch, type LaunchRead } from './registration.js'
 import { CLAUDE_MCP_FILE, mcpLaunch, renderCommands, type Launch, type McpLaunch } from './render.js'
 import { loadState } from './state.js'
 
@@ -25,11 +25,19 @@ async function launchFile(home: string, h: Harness): Promise<string> {
     return registrationFor(home, h, h === 'opencode' ? await opencodeConfigPath(home) : undefined).file
 }
 
-// Purpose: what the registration of a harness starts (null: none, or an unreadable file).
-async function registeredLaunch(home: string, h: Harness): Promise<McpLaunch | null> {
+// Purpose: what the registration of a harness starts, and why it cannot be read (readLaunch). A missing or
+// unopenable file is no registration.
+async function registeredLaunch(home: string, h: Harness): Promise<LaunchRead & { file: string }> {
     const file = await launchFile(home, h)
     const text = await readTextFile(file).catch(() => null)
-    return text === null ? null : readLaunch(h, text, file)
+    return { file, ...(text === null ? { launch: null, problem: null } : readLaunch(h, text, file)) }
+}
+
+// Purpose: the warn line of a registration doctor cannot read, or null. The harness line says registered=no,
+// because doctor cannot tell what it starts; this line says why.
+function unreadableLine(h: Harness, found: LaunchRead & { file: string }): string | null {
+    if (found.problem === null) return null
+    return `warn      ${h} cannot read the registration in ${found.file}: ${found.problem}; fix the file, then ${reinstallFix(h)}`
 }
 
 // Purpose: the warn line of a registration that starts another node or CLI than `current` (the launch install
@@ -45,11 +53,11 @@ async function staleLine(h: Harness, found: McpLaunch | null, current: Launch | 
     return `warn      ${h} registration is stale: it starts ${starts(found)}${missing}, this CLI is ${starts(wanted)}; ${reinstallFix(h)}`
 }
 
-// Purpose: the status line of one harness, then its warn line when its registration is stale.
+// Purpose: the status line of one harness, then its warn line when its registration is unreadable or stale.
 async function harnessLines(home: string, h: Harness, current: Launch | null): Promise<string[]> {
     const state = await loadState(home)
     const found = await registeredLaunch(home, h)
-    const registered = h === 'claude' ? state.execs['claude-plugin'] === true : found !== null
+    const registered = h === 'claude' ? state.execs['claude-plugin'] === true : found.launch !== null
     const files = renderCommands(h)
     let cmds = 0
     for (const f of files) if (await pathExists(path.join(commandDirFor(home, h), f.rel))) cmds++
@@ -58,8 +66,8 @@ async function harnessLines(home: string, h: Harness, current: Launch | null): P
     if (h === 'claude') line = `${line} ${claudeRoute(registered)}`
     // The config dir an env var can move (CODEX_HOME, XDG_CONFIG_HOME): show which one doctor checked.
     else if (h === 'codex' || h === 'opencode') line = `${line} dir=${path.dirname(commandDirFor(home, h))}`
-    const stale = await staleLine(h, found, current)
-    return stale === null ? [line] : [line, stale]
+    const warn = unreadableLine(h, found) ?? (await staleLine(h, found.launch, current))
+    return warn === null ? [line] : [line, warn]
 }
 
 // Purpose: the launch install would write now, or null when the built CLI is missing (the cli line says so).

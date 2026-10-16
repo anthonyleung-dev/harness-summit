@@ -11,10 +11,10 @@ import { BACKUP_SUFFIX } from '../../src/install/actions.js'
 import { doctorReport } from '../../src/install/doctor.js'
 import { removeJsonKey, removeTomlBlock } from '../../src/install/edits.js'
 import { runInstall, runUninstall } from '../../src/install/install.js'
-import { installLaunch } from '../../src/install/launch.js'
-import { OPENCODE_KEY } from '../../src/install/movable.js'
+import { JSON_KEY, OPENCODE_KEY } from '../../src/install/keys.js'
+import { installLaunch, MCP_PREFIX } from '../../src/install/launch.js'
 import type { Launch } from '../../src/install/render.js'
-import { seededHome, snapshot } from '../helpers/env.js'
+import { runCli, seededHome, snapshot, tmpDir } from '../helpers/env.js'
 import { claudeExec, fakeOpencode, OLD_LAUNCH, TEST_LAUNCH } from '../helpers/install.js'
 
 // Launch A: another node and another CLI. Launch B: TEST_LAUNCH.
@@ -27,9 +27,9 @@ const OPENCODE = '.config/opencode/opencode.jsonc'
 const CLAUDE_MCP = '.local/share/harness-summit/claude-marketplace/claude/.mcp.json'
 const PI_EXT = '.pi/agent/extensions/harness-summit.ts'
 
-// Purpose: a seeded home, its original tree, and install/uninstall of every harness with the fake opencode.
-function setup() {
-    const home = seededHome()
+// Purpose: a home (default: seeded with user configs), its original tree, and install of every harness with the
+// fake opencode.
+function setup(home = seededHome()) {
     const original = snapshot(home)
     const exec = claudeExec(fakeOpencode)
     const opts = { harnesses: [...HARNESSES], home, dryRun: false, exec }
@@ -51,9 +51,7 @@ function holdsLaunch(read: (rel: string) => string, launch: Launch): void {
     )
     expect(JSON.parse(read(OMP)).mcpServers['harness-summit']).toEqual({ command: launch.node, args: args('omp') })
     expect(read(OPENCODE)).toContain(JSON.stringify([launch.node, ...args('opencode')]))
-    expect(read(PI_EXT)).toContain(
-        `const INJECTED_MCP: McpLaunch | null = ${JSON.stringify({ command: launch.node, args: args('pi') })}`,
-    )
+    expect(read(PI_EXT)).toContain(`${MCP_PREFIX}${JSON.stringify({ command: launch.node, args: args('pi') })}`)
 }
 
 describe('re-install with another launch', () => {
@@ -77,9 +75,7 @@ describe('re-install with another launch', () => {
 
         // Foreign bytes: each user file minus our key is the user's original file, byte for byte.
         expect(removeTomlBlock(read(CODEX))).toBe(original.files[CODEX])
-        expect(removeJsonKey(read(OMP), ['mcpServers', 'harness-summit'], original.files[OMP]!, OMP)).toBe(
-            original.files[OMP],
-        )
+        expect(removeJsonKey(read(OMP), JSON_KEY, original.files[OMP]!, OMP)).toBe(original.files[OMP])
         expect(removeJsonKey(read(OPENCODE), OPENCODE_KEY, original.files[OPENCODE]!, OPENCODE)).toBe(
             original.files[OPENCODE],
         )
@@ -90,6 +86,17 @@ describe('re-install with another launch', () => {
         expect(again.filter((l) => !l.startsWith('ok '))).toEqual([])
         expect(opencodeRuns()).toBe(2)
 
+        await runUninstall({ harnesses: [...HARNESSES], home, dryRun: false, exec: claudeExec(), launch: B })
+        expect(snapshot(home)).toEqual(original)
+    })
+
+    it('in a home with no config files, uninstall after A -> B leaves the home as it was (no backup of our edit)', async () => {
+        const { home, original, install } = setup(tmpDir('home'))
+        await install(A)
+        await install(B)
+        for (const rel of [CODEX, OMP, '.config/opencode/opencode.json']) {
+            expect(fs.existsSync(path.join(home, rel + BACKUP_SUFFIX))).toBe(false)
+        }
         await runUninstall({ harnesses: [...HARNESSES], home, dryRun: false, exec: claudeExec(), launch: B })
         expect(snapshot(home)).toEqual(original)
     })
@@ -131,5 +138,29 @@ describe('doctor names a stale registration', () => {
 
         await install(installLaunch())
         expect(await staleLines(home)).toEqual([])
+    })
+})
+
+describe('doctor names a registration it cannot read', () => {
+    it('a Codex config that does not parse and a pi extension without a launch: a reason line, exit 0', async () => {
+        const { home, install, read } = setup()
+        await install(B)
+        fs.appendFileSync(path.join(home, CODEX), '\n[broken\n')
+        const ext = read(PI_EXT).split('\n')
+        const at = ext.findIndex((l) => l.startsWith(MCP_PREFIX))
+        ext[at] = `${MCP_PREFIX}null`
+        fs.writeFileSync(path.join(home, PI_EXT), ext.join('\n'))
+        const lines = await doctorReport(home)
+        for (const [h, rel] of [
+            ['codex', CODEX],
+            ['pi', PI_EXT],
+        ] as const) {
+            expect(lines.find((l) => l.startsWith(`${h} `))).toMatch(/registered=no /)
+            const warn = lines.find((l) => l.startsWith(`warn      ${h} cannot read the registration`))
+            expect(warn).toContain(path.join(home, rel))
+        }
+        const cli = await runCli(['doctor', '--home', home], { env: { HARNESS_SUMMIT_HOME: tmpDir('root') } })
+        expect(cli.code).toBe(0)
+        expect(cli.stdout).toContain('warn      codex cannot read the registration')
     })
 })
