@@ -470,7 +470,10 @@ claude-session-start`, `hook claude-file-changed`, `notice --host-key <key>`, `i
   added since, so "unchanged since install" does not mean "nothing of the user's"): uninstall removes our
   key (and the parent objects install created that are now empty); when only whitespace or an empty `{}`
   is left, the file goes, else it stays with the user's content (`isBlankConfig`,
-  `src/install/editAction.ts`; a comment counts as content). The parent dirs of an edited file are
+  `src/install/editAction.ts`; a comment counts as content). Removing a JSON key never drops a user's
+  comment: jsonc-parser removes the comments in the removed range, so `setJsonKey` puts each one back where
+  the key was, one per line (`src/install/edits.ts`). A backup of a file install created, which 1.0.2 could
+  write after a user edit and a re-install, is removed by uninstall. The parent dirs of an edited file are
   recorded before the edit, also before an external command that creates the file, so uninstall removes
   the ones install's run created. `uninstall` removes exactly what `install` added: a parent object install created
   goes too when it is empty; a key the user already removed is no error. `--dry-run` prints the plan.

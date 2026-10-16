@@ -66,6 +66,11 @@ export async function revertEdit(a: EditAction, env: ActionEnv): Promise<void> {
     const backup = await readTextFile(a.path + BACKUP_SUFFIX)
     const untouched = current !== null && sha(current) === rec.postSha
     if (current !== null && !rec.existed) {
+        // A backup of a file install created holds no user file: only an earlier release wrote one (1.0.2).
+        if (backup !== null) {
+            env.report(`remove  ${a.path + BACKUP_SUFFIX} (backup of a file install created)`)
+            if (!env.dryRun) await fs.rm(a.path + BACKUP_SUFFIX, { force: true })
+        }
         const reverted = a.revert(current, '')
         if (isBlankConfig(reverted)) {
             env.report(`remove  ${a.path} (created by install)`)

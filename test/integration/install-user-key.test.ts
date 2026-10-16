@@ -1,6 +1,7 @@
 // A config file install created, where the user then adds their own key (SPEC §8): uninstall removes only our
 // key and keeps the file with the user's content, whether or not an install ran again in between; with no user
-// content left, the file goes and the home is as before install. No backup of a file install created is left.
+// content left, the file goes and the home is as before install. No backup of a file install created is left. A
+// user's comment is content too: uninstall keeps it, and so the file.
 import fs from 'node:fs'
 import path from 'node:path'
 import { parse as parseToml } from 'smol-toml'
@@ -73,6 +74,41 @@ describe('a user key in a config file install created', () => {
         const original = snapshot(home)
         await install(OLD_LAUNCH)
         await install(TEST_LAUNCH)
+        await uninstall()
+        expect(snapshot(home)).toEqual(original)
+    })
+})
+
+describe('a user comment in a config file install created, and a legacy backup of one', () => {
+    // Purpose: the omp mcp.json after a one-harness install in an empty home, with `edit` applied by the user.
+    async function ompWith(edit: (text: string) => string) {
+        const home = tmpDir('home')
+        const opts = { harnesses: ['omp' as const], home, dryRun: false, exec: claudeExec(), launch: TEST_LAUNCH }
+        await runInstall(opts)
+        const file = path.join(home, OMP)
+        fs.writeFileSync(file, edit(fs.readFileSync(file, 'utf8')))
+        return { home, file, uninstall: () => runUninstall(opts) }
+    }
+
+    for (const [where, edit] of [
+        ['inside {}', (t: string) => t.replace('{', '{\n  // my note\n')],
+        ['inside mcpServers', (t: string) => t.replace('"mcpServers": {', '"mcpServers": { // inner note\n')],
+    ] as const) {
+        it(`a comment ${where}: uninstall keeps the file with the comment, our key gone`, async () => {
+            const { file, uninstall } = await ompWith(edit)
+            const note = where === 'inside {}' ? '// my note' : '// inner note'
+            await uninstall()
+            const text = fs.readFileSync(file, 'utf8')
+            expect(text).toContain(note)
+            expect(text).not.toContain('harness-summit')
+            expect(fs.existsSync(file + BACKUP_SUFFIX)).toBe(false)
+        })
+    }
+
+    it('a backup an earlier release wrote of a file install created: uninstall removes it', async () => {
+        const { home, file, uninstall } = await ompWith((t) => t)
+        const original = snapshot(tmpDir('home'))
+        fs.writeFileSync(file + BACKUP_SUFFIX, fs.readFileSync(file, 'utf8')) // as 1.0.2 could leave it
         await uninstall()
         expect(snapshot(home)).toEqual(original)
     })
