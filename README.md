@@ -1,5 +1,8 @@
 # harness-summit
 
+[![npm version](https://img.shields.io/npm/v/harness-summit)](https://www.npmjs.com/package/harness-summit)
+[![npm downloads](https://img.shields.io/npm/dm/harness-summit)](https://www.npmjs.com/package/harness-summit)
+
 Let your coding agents talk to each other.
 
 harness-summit lets agent sessions on one machine send messages to each other, across different
